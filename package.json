@@ -1,15 +1,14 @@
 {
-  "name": "wwebjs-bot",
+  "name": "whatsapp-bot",
   "version": "1.0.0",
+  "description": "Bot de WhatsApp con whatsapp-web.js",
   "main": "main.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node ."
+    "start": "node main.js"
   },
   "author": "",
   "license": "ISC",
   "keywords": [],
-  "description": "",
   "dependencies": {
     "dotenv": "^16.4.7",
     "openai": "^4.83.0",
