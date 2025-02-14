@@ -1,6 +1,18 @@
 require("dotenv").config();
 const { Client, LocalAuth } = require("whatsapp-web.js");
 const qrcode = require("qrcode-terminal");
+const express = require("express"); // Agregar Express para evitar el error
+const app = express();
+
+const PORT = process.env.PORT || 8080; // Azure App Services usa el puerto 8080
+
+app.get("/", (req, res) => {
+  res.send("Essenza Bot está corriendo en Azure 🚀");
+});
+
+app.listen(PORT, () => {
+  console.log(`Servidor web iniciado en el puerto ${PORT}`);
+});
 
 const userState = {};
 const humanModeUsers = new Map();
