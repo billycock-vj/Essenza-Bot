@@ -4,6 +4,7 @@
   "description": "Bot de WhatsApp con whatsapp-web.js",
   "main": "main.js",
   "scripts": {
+    "prestart": "npm install",
     "start": "node main.js"
   },
   "author": "",
