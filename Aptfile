@@ -1,4 +1,4 @@
-libatk1.0-0
+libasound2-plugins
 libnss3
 libx11-xcb1
 libxcomposite1
@@ -9,7 +9,6 @@ libxfixes3
 libxi6
 libxrandr2
 libxrender1
-libasound2
 libpangocairo-1.0-0
 libatk-bridge2.0-0
 libgtk-3-0
