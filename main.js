@@ -28,7 +28,6 @@ const servicios = {
 
 // Inicializar el bot
 const client = new Client({
-  authStrategy: new LocalAuth(),
   puppeteer: {
     headless: true,
     args: [
@@ -37,6 +36,7 @@ const client = new Client({
       "--disable-dev-shm-usage",
       "--disable-accelerated-2d-canvas",
       "--disable-gpu",
+      "--window-size=1920x1080",
     ],
   },
 });
