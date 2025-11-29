@@ -11,12 +11,9 @@
   "license": "ISC",
   "keywords": [],
   "dependencies": {
+    "@wppconnect-team/wppconnect": "^1.37.8",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "openai": "^4.83.0",
-    "puppeteer": "^24.2.1",
-    "puppeteer-core": "^24.2.0",
-    "qrcode-terminal": "^0.12.0",
-    "whatsapp-web.js": "^1.26.0"
+    "qrcode-terminal": "^0.12.0"
   }
 }

@@ -396,3 +396,24 @@ FodyWeavers.xsd
 
 # JetBrains Rider
 *.sln.iml
+
+# ============================================
+# WhatsApp Bot - Archivos de sesión y tokens
+# ============================================
+.wwebjs_auth/
+tokens/
+.wwebjs_cache/
+
+# Logs del bot
+logs/
+*.log
+
+# Variables de entorno
+.env
+.env.local
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
