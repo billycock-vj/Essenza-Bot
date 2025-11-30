@@ -263,7 +263,8 @@ async function verificarRecordatorios(client) {
         const horasRestantes = Math.round(
           (reserva.fechaHora - ahora) / (1000 * 60 * 60)
         );
-        await client.sendText(
+        await enviarMensajeSeguro(
+          client,
           reserva.userId,
           `🔔 *Recordatorio de Cita*\n\n` +
             `Hola ${reserva.userName}! 👋\n\n` +
@@ -312,6 +313,70 @@ function obtenerEstadisticas() {
 // ============================================
 // SISTEMA DE LOGS
 // ============================================
+// ============================================
+// FUNCIÓN HELPER PARA ENVIAR MENSAJES DE FORMA SEGURA
+// ============================================
+async function enviarMensajeSeguro(client, userId, mensaje) {
+  try {
+    // Validar que userId existe y tiene formato correcto
+    if (!userId || typeof userId !== "string") {
+      logMessage("ERROR", "Intento de enviar mensaje con userId inválido", {
+        userId: userId,
+        mensaje: mensaje.substring(0, 50),
+      });
+      return false;
+    }
+
+    // Asegurar que el userId tiene el formato correcto (@c.us)
+    let numeroFormateado = userId.trim();
+
+    // Si no termina con @c.us, agregarlo
+    if (!numeroFormateado.endsWith("@c.us")) {
+      // Remover cualquier @g.us u otro sufijo
+      numeroFormateado = numeroFormateado.replace(/@.*$/, "");
+      // Agregar @c.us
+      numeroFormateado = numeroFormateado + "@c.us";
+    }
+
+    // Validar que el número tiene formato válido (al menos 10 caracteres antes de @c.us)
+    if (numeroFormateado.length < 13 || !numeroFormateado.includes("@c.us")) {
+      logMessage("ERROR", "Número de WhatsApp inválido para enviar mensaje", {
+        original: userId,
+        formateado: numeroFormateado,
+      });
+      return false;
+    }
+
+    // Validar que NO es un estado (los estados no tienen formato @c.us válido)
+    if (
+      numeroFormateado.includes("status") ||
+      numeroFormateado.includes("broadcast")
+    ) {
+      logMessage("ERROR", "Intento de enviar mensaje a estado o broadcast", {
+        numeroFormateado: numeroFormateado,
+      });
+      return false;
+    }
+
+    // Enviar el mensaje usando el número formateado correctamente
+    await client.sendText(numeroFormateado, mensaje);
+
+    logMessage("SUCCESS", `Mensaje enviado correctamente`, {
+      destino: numeroFormateado.replace("@c.us", ""),
+      longitud: mensaje.length,
+    });
+
+    return true;
+  } catch (error) {
+    logMessage("ERROR", "Error al enviar mensaje", {
+      userId: userId,
+      error: error.message,
+      stack: error.stack?.substring(0, 200),
+    });
+    return false;
+  }
+}
+
 function logMessage(type, message, data = null) {
   const timestamp = new Date().toLocaleString("es-PE", {
     dateStyle: "short",
@@ -460,10 +525,98 @@ function start(client) {
   // Evento cuando se recibe un mensaje
   client.onMessage(async (message) => {
     try {
-      if (message.fromMe) return;
-      if (!message.body) return;
+      // ============================================
+      // FILTROS ESTRICTOS PARA IGNORAR ESTADOS Y MENSAJES NO DESEADOS
+      // ============================================
 
+      // 1. Ignorar mensajes propios
+      if (message.fromMe === true) return;
+
+      // 2. Ignorar si no tiene cuerpo de mensaje (texto, imagen, etc.)
+      if (!message.body && !message.caption) return;
+
+      // 3. Filtrar estados de WhatsApp - Múltiples verificaciones
+      if (
+        message.isStatus === true ||
+        message.type === "status" ||
+        message.isStatusMsg === true ||
+        (message.chatId && message.chatId.includes("status")) ||
+        (message.from && message.from.includes("status"))
+      ) {
+        logMessage("INFO", "Mensaje de estado ignorado", {
+          type: message.type,
+          from: message.from,
+          chatId: message.chatId,
+        });
+        return;
+      }
+
+      // 4. Filtrar mensajes de grupos
+      if (message.isGroupMsg === true || message.isGroup === true) {
+        return;
+      }
+
+      // 5. Filtrar mensajes de broadcast
+      if (message.isBroadcast === true) {
+        return;
+      }
+
+      // 6. Filtrar actualizaciones de perfil y otros tipos de sistema
+      if (
+        message.type === "protocol" ||
+        message.type === "notification" ||
+        message.type === "e2e_notification" ||
+        message.type === "revoked" ||
+        message.type === "sticker" ||
+        message.type === "location" ||
+        message.type === "vcard" ||
+        message.type === "multi_vcard"
+      ) {
+        return;
+      }
+
+      // 7. Validar que el remitente sea un número válido (no estados)
+      if (!message.from || typeof message.from !== "string") {
+        return;
+      }
+
+      // 8. Validación CRÍTICA: Solo procesar chats individuales (@c.us)
+      // Los estados NO tienen formato @c.us, así que esto los filtra automáticamente
+      if (!message.from || !message.from.endsWith("@c.us")) {
+        logMessage("INFO", "Mensaje ignorado - no es chat individual válido", {
+          from: message.from,
+          type: message.type,
+          isStatus: message.isStatus,
+        });
+        return; // Solo chats individuales (@c.us), NO grupos (@g.us) ni estados
+      }
+
+      // 9. Solo procesar mensajes de texto, imagen, video, audio, documento
+      const tiposPermitidos = [
+        "chat",
+        "image",
+        "video",
+        "audio",
+        "document",
+        "ptt",
+      ];
+      if (message.type && !tiposPermitidos.includes(message.type)) {
+        logMessage("INFO", "Mensaje ignorado - tipo no permitido", {
+          type: message.type,
+          from: message.from,
+        });
+        return;
+      }
+
+      // 10. Validación final del userId
       const userId = message.from;
+      if (!userId || userId.length < 10 || !userId.includes("@c.us")) {
+        logMessage("WARNING", "Mensaje ignorado - userId inválido", {
+          userId: userId,
+          type: message.type,
+        });
+        return;
+      }
       let userName =
         message.notifyName ||
         message.pushname ||
@@ -504,7 +657,11 @@ function start(client) {
           textLower === "estadísticas")
       ) {
         try {
-          await client.sendText(ADMIN_NUMBER, obtenerEstadisticas());
+          await enviarMensajeSeguro(
+            client,
+            ADMIN_NUMBER,
+            obtenerEstadisticas()
+          );
           logMessage("INFO", "Estadísticas enviadas al administrador");
         } catch (error) {
           logMessage("ERROR", "Error al enviar estadísticas", {
@@ -536,7 +693,8 @@ function start(client) {
               })
               .join("\n");
 
-            await client.sendText(
+            await enviarMensajeSeguro(
+              client,
               ADMIN_NUMBER,
               `⚠️ *Recordatorio*\n\n` +
                 `Hay ${usuariosEnAsesor.length} usuario(s) en modo asesor.\n\n` +
@@ -581,7 +739,7 @@ function start(client) {
         }
 
         try {
-          await client.sendText(userId, respuesta);
+          await enviarMensajeSeguro(client, userId, respuesta);
           logMessage("SUCCESS", `Saludo respondido a ${userName}`, {
             tipo: saludo,
           });
@@ -612,7 +770,8 @@ function start(client) {
           // Si escribió "bot", confirmar que salió del modo asesor
           if (fuzzyMatch(textLower, "bot") || textLower === "bot") {
             try {
-              await client.sendText(
+              await enviarMensajeSeguro(
+                client,
                 userId,
                 "✅ *Modo Asesor Desactivado*\n\n" +
                   "Has vuelto al bot automático.\n\n" +
@@ -645,14 +804,16 @@ function start(client) {
         logMessage("INFO", `Usuario ${userName} activó modo asesor`);
 
         try {
-          await client.sendText(
+          await enviarMensajeSeguro(
+            client,
             ADMIN_NUMBER,
             `🔔 *Nueva solicitud de asesor*\n\nUsuario: ${userName}\nNúmero: ${userId.replace(
               "@c.us",
               ""
             )}\n\nEl bot dejará de responder a este usuario.`
           );
-          await client.sendText(
+          await enviarMensajeSeguro(
+            client,
             userId,
             "🧑‍💼 *Modo Asesor Activado*\n\nTe contactará un asesor humano. El bot dejará de responder automáticamente.\n\nPara volver al bot, escribe *Bot*."
           );
@@ -692,7 +853,8 @@ function start(client) {
         logMessage("INFO", `Usuario ${userName} solicitó el menú principal`);
 
         try {
-          await client.sendText(
+          await enviarMensajeSeguro(
+            client,
             userId,
             "🌿 *ESSENZA SPA*\n\n" +
               "1️⃣ Servicios\n" +
@@ -723,7 +885,8 @@ function start(client) {
 
         try {
           const saludoHora = getSaludoPorHora();
-          await client.sendText(
+          await enviarMensajeSeguro(
+            client,
             userId,
             `${saludoHora}! 👋\n\n¡Hola ${userName}! Bienvenido a *Essenza Spa*.\n\n` +
               `Somos especialistas en bienestar y belleza. 💆‍♀️✨\n\n` +
@@ -760,7 +923,7 @@ function start(client) {
           });
           detalle += `\n¿Te interesa este servicio? Escribe *3* para reservar o *Menu* para volver al menú principal`;
 
-          await client.sendText(userId, detalle);
+          await enviarMensajeSeguro(client, userId, detalle);
 
           // Si hay imagen configurada, intentar enviarla
           if (serv.imagen && fs.existsSync(serv.imagen)) {
@@ -797,7 +960,8 @@ function start(client) {
         ) {
           userState[userId] = "menu";
           try {
-            await client.sendText(
+            await enviarMensajeSeguro(
+              client,
               userId,
               "🌿 *ESSENZA SPA*\n\n" +
                 "1️⃣ Servicios\n" +
@@ -823,7 +987,8 @@ function start(client) {
           `Usuario ${userName} envió opción inválida en lista de servicios`,
           { opcion: textLower }
         );
-        await client.sendText(
+        await enviarMensajeSeguro(
+          client,
           userId,
           "❌ Opción inválida.\n\nEscribe el *número* (1-6) del servicio que deseas ver, o *Menu* para volver al menú principal."
         );
@@ -848,7 +1013,7 @@ function start(client) {
               });
               lista +=
                 "Escribe el *número* del servicio (1-6) para más detalles o *Menu* para volver";
-              await client.sendText(userId, lista);
+              await enviarMensajeSeguro(client, userId, lista);
               logMessage("SUCCESS", `Lista de servicios enviada a ${userName}`);
               return;
 
@@ -857,7 +1022,8 @@ function start(client) {
                 "INFO",
                 `Usuario ${userName} solicitó ver promociones`
               );
-              await client.sendText(
+              await enviarMensajeSeguro(
+                client,
                 userId,
                 "🌟 *PROMOCIÓN ESPECIAL*\n\n" +
                   "💆 *Combo Relax*\n" +
@@ -884,14 +1050,16 @@ function start(client) {
               );
 
               try {
-                await client.sendText(
+                await enviarMensajeSeguro(
+                  client,
                   ADMIN_NUMBER,
                   `🔔 *NUEVA SOLICITUD DE RESERVA*\n\n` +
                     `Usuario: ${userName}\n` +
                     `Número: ${userId.replace("@c.us", "")}\n\n` +
                     `Por favor contacta al cliente para confirmar los detalles.`
                 );
-                await client.sendText(
+                await enviarMensajeSeguro(
+                  client,
                   userId,
                   "📅 *SOLICITUD DE RESERVA*\n\n" +
                     "Un asesor se pondrá en contacto contigo pronto.\n\n" +
@@ -914,7 +1082,8 @@ function start(client) {
 
             case "4":
               logMessage("INFO", `Usuario ${userName} solicitó ver ubicación`);
-              await client.sendText(
+              await enviarMensajeSeguro(
+                client,
                 userId,
                 `📍 *NUESTRA UBICACIÓN*\n\n` +
                   `🏢 ${UBICACION}\n\n` +
@@ -930,7 +1099,8 @@ function start(client) {
                 "INFO",
                 `Usuario ${userName} solicitó ver información de pagos`
               );
-              await client.sendText(
+              await enviarMensajeSeguro(
+                client,
                 userId,
                 "💳 *INFORMACIÓN DE PAGO*\n\n" +
                   "📱 *Yape:*\n" +
@@ -949,7 +1119,8 @@ function start(client) {
 
             case "6":
               logMessage("INFO", `Usuario ${userName} solicitó ver políticas`);
-              await client.sendText(
+              await enviarMensajeSeguro(
+                client,
                 userId,
                 "📜 *POLÍTICAS DE RESERVA*\n\n" +
                   "⏰ *Cancelación/Modificación:*\n" +
@@ -972,14 +1143,16 @@ function start(client) {
               );
 
               try {
-                await client.sendText(
+                await enviarMensajeSeguro(
+                  client,
                   ADMIN_NUMBER,
                   `🔔 *Nueva solicitud de asesor*\n\nUsuario: ${userName}\nNúmero: ${userId.replace(
                     "@c.us",
                     ""
                   )}\n\nEl bot dejará de responder a este usuario.`
                 );
-                await client.sendText(
+                await enviarMensajeSeguro(
+                  client,
                   userId,
                   "🧑‍💼 *Modo Asesor Activado*\n\nTe contactará un asesor humano. El bot dejará de responder automáticamente.\n\nPara volver al bot, escribe *Bot*."
                 );
@@ -1001,7 +1174,8 @@ function start(client) {
                 `Usuario ${userName} envió opción inválida en menú`,
                 { opcion: textLower, estado: userState[userId] }
               );
-              await client.sendText(
+              await enviarMensajeSeguro(
+                client,
                 userId,
                 "❌ Opción inválida.\n\nEscribe el *número* (1-7) de la opción que deseas o *Menu* para ver el menú principal."
               );
@@ -1029,7 +1203,8 @@ function start(client) {
             `Usuario ${userName} canceló el proceso de reserva y volvió al menú`
           );
           try {
-            await client.sendText(
+            await enviarMensajeSeguro(
+              client,
               userId,
               "✅ Has vuelto al menú principal.\n\n" +
                 "🌿 *ESSENZA SPA*\n\n" +
@@ -1113,7 +1288,8 @@ function start(client) {
 
             // Confirmar que se recibió la información
             try {
-              await client.sendText(
+              await enviarMensajeSeguro(
+                client,
                 userId,
                 "✅ *Información recibida*\n\n" +
                   "Hemos registrado tu información de reserva:\n" +
@@ -1145,7 +1321,8 @@ function start(client) {
 
             if (!ultimaRespuesta || ahora - ultimaRespuesta >= dosMinutos) {
               try {
-                await client.sendText(
+                await enviarMensajeSeguro(
+                  client,
                   userId,
                   "📝 *Información parcial recibida*\n\n" +
                     "Hemos detectado información de tu reserva, pero necesitamos más detalles:\n\n" +
@@ -1179,7 +1356,8 @@ function start(client) {
           // Solo responder si han pasado al menos 2 minutos desde la última respuesta
           if (!ultimaRespuesta || ahora - ultimaRespuesta >= dosMinutos) {
             try {
-              await client.sendText(
+              await enviarMensajeSeguro(
+                client,
                 userId,
                 "📅 *Estás en proceso de reserva*\n\n" +
                   "Un asesor se pondrá en contacto contigo pronto.\n\n" +
@@ -1229,7 +1407,8 @@ function start(client) {
         "No estoy seguro de qué necesitas. 💭\n\nEscribe *Menu* para explorar nuestros servicios.",
       ];
 
-      await client.sendText(
+      await enviarMensajeSeguro(
+        client,
         userId,
         respuestasVariadas[
           Math.floor(Math.random() * respuestasVariadas.length)
