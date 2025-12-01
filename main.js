@@ -467,7 +467,21 @@ wppconnect
       logMessage("INFO", `Estado de sesión: ${statusSession}`, { session });
     },
     headless: true,
-    browserArgs: ["--no-sandbox", "--disable-setuid-sandbox"],
+    browserArgs: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-accelerated-2d-canvas",
+      "--disable-gpu",
+      "--disable-software-rasterizer",
+      "--no-first-run",
+      "--no-zygote",
+      "--single-process",
+      "--disable-extensions",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
+    ],
   })
   .then((client) => {
     clientInstance = client;
@@ -512,7 +526,21 @@ function start(client) {
             session: "essenza-bot",
             catchQR: () => {},
             headless: true,
-            browserArgs: ["--no-sandbox", "--disable-setuid-sandbox"],
+            browserArgs: [
+              "--no-sandbox",
+              "--disable-setuid-sandbox",
+              "--disable-dev-shm-usage",
+              "--disable-accelerated-2d-canvas",
+              "--disable-gpu",
+              "--disable-software-rasterizer",
+              "--no-first-run",
+              "--no-zygote",
+              "--single-process",
+              "--disable-extensions",
+              "--disable-background-timer-throttling",
+              "--disable-backgrounding-occluded-windows",
+              "--disable-renderer-backgrounding",
+            ],
           })
           .then((newClient) => {
             clientInstance = newClient;

@@ -24,3 +24,10 @@ libxshmfence1
 libdrm2
 libxcb1
 libxcb-dri3-0
+
+# Dependencias adicionales para Railway (si el error persiste)
+libglib2.0-0
+libcairo2
+libpango-1.0-0
+libfontconfig1
+libfreetype6
