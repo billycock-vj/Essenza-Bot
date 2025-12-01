@@ -423,24 +423,72 @@ wppconnect
     session: "essenza-bot",
     catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
       console.clear();
-      console.log("\n" + "=".repeat(50));
+      console.log("\n" + "=".repeat(60));
       console.log("📱 ESCANEA ESTE QR CON WHATSAPP:");
-      console.log("=".repeat(50) + "\n");
+      console.log("=".repeat(60) + "\n");
 
       try {
-        if (asciiQR && typeof asciiQR === "string") {
+        // Priorizar asciiQR si está disponible (mejor para terminales)
+        if (asciiQR && typeof asciiQR === "string" && asciiQR.length > 0) {
           console.log(asciiQR);
-        } else if (
+        }
+        // Si tenemos urlCode, intentar generar QR desde la URL
+        else if (urlCode && typeof urlCode === "string") {
+          console.log(
+            "🔗 URL del QR (copia y pega en tu navegador si el QR no se escanea):"
+          );
+          console.log(urlCode);
+          console.log("\n📱 QR Code:\n");
+          qrcode.generate(urlCode, {
+            small: false,
+            type: "terminal",
+            errorCorrectionLevel: "M",
+          });
+        }
+        // Si tenemos base64Qr válido
+        else if (
           base64Qr &&
           typeof base64Qr === "string" &&
           base64Qr.length < 1000 &&
-          !base64Qr.includes("{")
+          !base64Qr.includes("{") &&
+          !base64Qr.includes("http")
         ) {
-          qrcode.generate(base64Qr, { small: false });
+          console.log("📱 QR Code:\n");
+          qrcode.generate(base64Qr, {
+            small: false,
+            type: "terminal",
+            errorCorrectionLevel: "M",
+          });
+        }
+        // Si tenemos una URL en base64Qr
+        else if (
+          base64Qr &&
+          typeof base64Qr === "string" &&
+          (base64Qr.includes("http") || base64Qr.length > 100)
+        ) {
+          // Intentar extraer URL si está en el string
+          const urlMatch = base64Qr.match(/https?:\/\/[^\s]+/);
+          if (urlMatch) {
+            console.log(
+              "🔗 URL del QR (copia y pega en tu navegador si el QR no se escanea):"
+            );
+            console.log(urlMatch[0]);
+            console.log("\n📱 QR Code:\n");
+            qrcode.generate(urlMatch[0], {
+              small: false,
+              type: "terminal",
+              errorCorrectionLevel: "M",
+            });
+          } else {
+            console.log("⚠️ El QR se está generando...");
+            console.log(
+              "💡 Por favor, espera unos segundos o revisa la sesión en la carpeta tokens/"
+            );
+          }
         } else {
           console.log("⚠️ El QR se está generando...");
           console.log(
-            "💡 Por favor, espera unos segundos o revisa la sesión en la carpeta .wwebjs_auth"
+            "💡 Por favor, espera unos segundos o revisa la sesión en la carpeta tokens/"
           );
           logMessage(
             "WARNING",
@@ -457,7 +505,11 @@ wppconnect
         });
       }
 
-      console.log("\n" + "=".repeat(50) + "\n");
+      console.log("\n" + "=".repeat(60));
+      console.log(
+        "💡 Si el QR no se escanea bien, busca la URL arriba y ábrela en tu navegador"
+      );
+      console.log("=".repeat(60) + "\n");
       logMessage(
         "INFO",
         `QR Code procesado - Intento ${attempts || 1} - Esperando escaneo`
