@@ -316,6 +316,12 @@ function obtenerEstadisticas() {
 // ============================================
 // FUNCIÓN HELPER PARA ENVIAR MENSAJES DE FORMA SEGURA
 // ============================================
+// Función auxiliar para extraer el número sin el sufijo (@c.us o @lid)
+function extraerNumero(userId) {
+  if (!userId || typeof userId !== "string") return userId;
+  return userId.replace(/@(c\.us|lid)$/, "");
+}
+
 async function enviarMensajeSeguro(client, userId, mensaje) {
   try {
     // Validar que userId existe y tiene formato correcto
@@ -327,19 +333,26 @@ async function enviarMensajeSeguro(client, userId, mensaje) {
       return false;
     }
 
-    // Asegurar que el userId tiene el formato correcto (@c.us)
+    // Asegurar que el userId tiene el formato correcto (@c.us o @lid)
     let numeroFormateado = userId.trim();
 
-    // Si no termina con @c.us, agregarlo
-    if (!numeroFormateado.endsWith("@c.us")) {
+    // Si ya tiene @c.us o @lid, mantenerlo
+    if (numeroFormateado.endsWith("@c.us") || numeroFormateado.endsWith("@lid")) {
+      // Ya está en formato correcto, no hacer nada
+    } else {
+      // Si no termina con @c.us o @lid, agregar @c.us
       // Remover cualquier @g.us u otro sufijo
       numeroFormateado = numeroFormateado.replace(/@.*$/, "");
-      // Agregar @c.us
+      // Agregar @c.us por defecto
       numeroFormateado = numeroFormateado + "@c.us";
     }
 
-    // Validar que el número tiene formato válido (al menos 10 caracteres antes de @c.us)
-    if (numeroFormateado.length < 13 || !numeroFormateado.includes("@c.us")) {
+    // Validar que el número tiene formato válido (@c.us o @lid)
+    const esFormatoValido = 
+      (numeroFormateado.includes("@c.us") || numeroFormateado.includes("@lid")) &&
+      numeroFormateado.length >= 13;
+    
+    if (!esFormatoValido) {
       logMessage("ERROR", "Número de WhatsApp inválido para enviar mensaje", {
         original: userId,
         formateado: numeroFormateado,
@@ -362,7 +375,7 @@ async function enviarMensajeSeguro(client, userId, mensaje) {
     await client.sendText(numeroFormateado, mensaje);
 
     logMessage("SUCCESS", `Mensaje enviado correctamente`, {
-      destino: numeroFormateado.replace("@c.us", ""),
+      destino: extraerNumero(numeroFormateado),
       longitud: mensaje.length,
     });
 
@@ -729,15 +742,20 @@ function start(client) {
         return;
       }
 
-      // 8. Validación CRÍTICA: Solo procesar chats individuales (@c.us)
-      // Los estados NO tienen formato @c.us, así que esto los filtra automáticamente
-      if (!message.from || !message.from.endsWith("@c.us")) {
+      // 8. Validación CRÍTICA: Solo procesar chats individuales (@c.us o @lid)
+      // Los estados NO tienen formato @c.us o @lid, así que esto los filtra automáticamente
+      // @lid = linked device (dispositivo vinculado, también es un chat individual válido)
+      const esChatIndividual = 
+        message.from && 
+        (message.from.endsWith("@c.us") || message.from.endsWith("@lid"));
+      
+      if (!esChatIndividual) {
         logMessage("INFO", "Mensaje ignorado - no es chat individual válido", {
           from: message.from,
           type: message.type,
           isStatus: message.isStatus,
         });
-        return; // Solo chats individuales (@c.us), NO grupos (@g.us) ni estados
+        return; // Solo chats individuales (@c.us o @lid), NO grupos (@g.us) ni estados
       }
 
       // 9. Solo procesar mensajes de texto, imagen, video, audio, documento
@@ -759,7 +777,13 @@ function start(client) {
 
       // 10. Validación final del userId
       const userId = message.from;
-      if (!userId || userId.length < 10 || !userId.includes("@c.us")) {
+      // Aceptar tanto @c.us como @lid (dispositivo vinculado)
+      const esUserIdValido = 
+        userId && 
+        userId.length >= 10 && 
+        (userId.includes("@c.us") || userId.includes("@lid"));
+      
+      if (!esUserIdValido) {
         logMessage("WARNING", "Mensaje ignorado - userId inválido", {
           userId: userId,
           type: message.type,
@@ -792,7 +816,7 @@ function start(client) {
       }
 
       logMessage("INFO", `Mensaje recibido de ${userName}`, {
-        userId: userId.replace("@c.us", ""),
+        userId: extraerNumero(userId),
         mensaje: text.substring(0, 50),
       });
 
@@ -838,7 +862,7 @@ function start(client) {
             const listaUsuarios = usuariosEnAsesor
               .map((uid, idx) => {
                 const nombre = userNames[uid] || "Usuario";
-                return `${idx + 1}. ${nombre} (${uid.replace("@c.us", "")})`;
+                return `${idx + 1}. ${nombre} (${extraerNumero(uid)})`;
               })
               .join("\n");
 
@@ -956,10 +980,7 @@ function start(client) {
           await enviarMensajeSeguro(
             client,
             ADMIN_NUMBER,
-            `🔔 *Nueva solicitud de asesor*\n\nUsuario: ${userName}\nNúmero: ${userId.replace(
-              "@c.us",
-              ""
-            )}\n\nEl bot dejará de responder a este usuario.`
+            `🔔 *Nueva solicitud de asesor*\n\nUsuario: ${userName}\nNúmero: ${extraerNumero(userId)}\n\nEl bot dejará de responder a este usuario.`
           );
           await enviarMensajeSeguro(
             client,
@@ -1204,7 +1225,7 @@ function start(client) {
                   ADMIN_NUMBER,
                   `🔔 *NUEVA SOLICITUD DE RESERVA*\n\n` +
                     `Usuario: ${userName}\n` +
-                    `Número: ${userId.replace("@c.us", "")}\n\n` +
+                    `Número: ${extraerNumero(userId)}\n\n` +
                     `Por favor contacta al cliente para confirmar los detalles.`
                 );
                 await enviarMensajeSeguro(
@@ -1295,10 +1316,7 @@ function start(client) {
                 await enviarMensajeSeguro(
                   client,
                   ADMIN_NUMBER,
-                  `🔔 *Nueva solicitud de asesor*\n\nUsuario: ${userName}\nNúmero: ${userId.replace(
-                    "@c.us",
-                    ""
-                  )}\n\nEl bot dejará de responder a este usuario.`
+                  `🔔 *Nueva solicitud de asesor*\n\nUsuario: ${userName}\nNúmero: ${extraerNumero(userId)}\n\nEl bot dejará de responder a este usuario.`
                 );
                 await enviarMensajeSeguro(
                   client,
