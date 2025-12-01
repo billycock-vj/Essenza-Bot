@@ -481,7 +481,12 @@ wppconnect
       "--disable-background-timer-throttling",
       "--disable-backgrounding-occluded-windows",
       "--disable-renderer-backgrounding",
+      "--disable-features=TranslateUI",
+      "--disable-ipc-flooding-protection",
     ],
+    // Usar Chromium del sistema si está disponible
+    executablePath:
+      process.env.CHROMIUM_PATH || process.env.CHROME_BIN || undefined,
   })
   .then((client) => {
     clientInstance = client;
@@ -540,7 +545,12 @@ function start(client) {
               "--disable-background-timer-throttling",
               "--disable-backgrounding-occluded-windows",
               "--disable-renderer-backgrounding",
+              "--disable-features=TranslateUI",
+              "--disable-ipc-flooding-protection",
             ],
+            // Usar Chromium del sistema si está disponible
+            executablePath:
+              process.env.CHROMIUM_PATH || process.env.CHROME_BIN || undefined,
           })
           .then((newClient) => {
             clientInstance = newClient;

@@ -1,8 +1,16 @@
 # Usar imagen base de Node.js
 FROM node:20-slim
 
-# Instalar dependencias del sistema necesarias para Puppeteer/Chrome
+# Instalar dependencias del sistema y Chromium
 RUN apt-get update && apt-get install -y \
+    # Dependencias base
+    wget \
+    gnupg \
+    ca-certificates \
+    # Chromium y dependencias
+    chromium \
+    chromium-sandbox \
+    # Dependencias de librerías
     libasound2 \
     libasound2-plugins \
     libatk-bridge2.0-0 \
@@ -36,7 +44,17 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     libxshmfence1 \
     libxss1 \
+    # Dependencias adicionales
+    libgconf-2-4 \
+    libxinerama1 \
+    libxtst6 \
     && rm -rf /var/lib/apt/lists/*
+
+# Configurar variables de entorno para Puppeteer
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV CHROME_BIN=/usr/bin/chromium
+ENV CHROMIUM_PATH=/usr/bin/chromium
 
 # Crear directorio de trabajo
 WORKDIR /app
