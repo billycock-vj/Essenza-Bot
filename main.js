@@ -427,13 +427,28 @@ wppconnect
       console.log("📱 ESCANEA ESTE QR CON WHATSAPP:");
       console.log("=".repeat(60) + "\n");
 
+      // Variables para guardar base64 y URL
+      let qrBase64 = null;
+      let qrUrl = null;
+
       try {
         // Priorizar asciiQR si está disponible (mejor para terminales)
         if (asciiQR && typeof asciiQR === "string" && asciiQR.length > 0) {
           console.log(asciiQR);
+          // Intentar obtener base64 si está disponible
+          if (
+            base64Qr &&
+            typeof base64Qr === "string" &&
+            base64Qr.length > 50
+          ) {
+            if (!base64Qr.includes("http") && !base64Qr.includes("://")) {
+              qrBase64 = base64Qr;
+            }
+          }
         }
         // Si tenemos urlCode, intentar generar QR desde la URL
         else if (urlCode && typeof urlCode === "string") {
+          qrUrl = urlCode;
           console.log(
             "🔗 URL del QR (copia y pega en tu navegador si el QR no se escanea):"
           );
@@ -453,6 +468,7 @@ wppconnect
           !base64Qr.includes("{") &&
           !base64Qr.includes("http")
         ) {
+          qrBase64 = base64Qr;
           console.log("📱 QR Code:\n");
           qrcode.generate(base64Qr, {
             small: false,
@@ -469,6 +485,7 @@ wppconnect
           // Intentar extraer URL si está en el string
           const urlMatch = base64Qr.match(/https?:\/\/[^\s]+/);
           if (urlMatch) {
+            qrUrl = urlMatch[0];
             console.log(
               "🔗 URL del QR (copia y pega en tu navegador si el QR no se escanea):"
             );
@@ -480,12 +497,26 @@ wppconnect
               errorCorrectionLevel: "M",
             });
           } else {
+            // Si no hay URL pero hay base64, guardarlo
+            if (base64Qr && base64Qr.length > 50) {
+              qrBase64 = base64Qr;
+            }
             console.log("⚠️ El QR se está generando...");
             console.log(
               "💡 Por favor, espera unos segundos o revisa la sesión en la carpeta tokens/"
             );
           }
         } else {
+          // Intentar guardar base64 si está disponible
+          if (
+            base64Qr &&
+            typeof base64Qr === "string" &&
+            base64Qr.length > 50
+          ) {
+            if (!base64Qr.includes("http") && !base64Qr.includes("://")) {
+              qrBase64 = base64Qr;
+            }
+          }
           console.log("⚠️ El QR se está generando...");
           console.log(
             "💡 Por favor, espera unos segundos o revisa la sesión en la carpeta tokens/"
@@ -505,11 +536,39 @@ wppconnect
         });
       }
 
+      // Las variables qrBase64 y qrUrl ya están definidas arriba
+
       console.log("\n" + "=".repeat(60));
-      console.log(
-        "💡 Si el QR no se escanea bien, busca la URL arriba y ábrela en tu navegador"
-      );
-      console.log("=".repeat(60) + "\n");
+      console.log("📋 ALTERNATIVAS SI EL QR NO SE ESCANEA:");
+      console.log("=".repeat(60));
+
+      if (qrUrl) {
+        console.log("\n🔗 Opción 1 - URL directa:");
+        console.log(qrUrl);
+        console.log("   (Copia y pega esta URL en tu navegador)");
+      }
+
+      if (qrBase64) {
+        console.log("\n🖼️ Opción 2 - QR en Base64:");
+        console.log(
+          "   (Copia este código y pégalo en https://base64.guru/converter/decode/image)"
+        );
+        console.log("   O usa este comando en tu terminal:");
+        console.log(`   echo "${qrBase64}" | base64 -d > qr.png`);
+        console.log("\n📄 Base64 completo:");
+        // Mostrar el base64 en líneas más cortas para que sea más fácil copiar
+        const base64Lines = qrBase64.match(/.{1,80}/g) || [];
+        base64Lines.forEach((line) => {
+          console.log(line);
+        });
+      } else if (qrUrl) {
+        console.log(
+          "\n💡 Puedes generar un QR desde la URL usando cualquier generador online"
+        );
+        console.log("   Ejemplo: https://www.qr-code-generator.com/");
+      }
+
+      console.log("\n" + "=".repeat(60) + "\n");
       logMessage(
         "INFO",
         `QR Code procesado - Intento ${attempts || 1} - Esperando escaneo`
