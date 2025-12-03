@@ -218,11 +218,13 @@ function getRespuestaVariada(tipo) {
   return opciones[Math.floor(Math.random() * opciones.length)];
 }
 
-// Extraer nombre del mensaje
+// Extraer nombre del mensaje (mejorado con más patrones)
 function extractName(text) {
   const patterns = [
     /(?:me llamo|mi nombre es|soy|yo soy)\s+([a-záéíóúñ\s]+)/i,
     /(?:nombre|name)[\s:]+([a-záéíóúñ\s]+)/i,
+    /(?:me llaman|me dicen)\s+([a-záéíóúñ\s]+)/i,
+    /(?:puedes llamarme|llámame)\s+([a-záéíóúñ\s]+)/i,
   ];
 
   for (const pattern of patterns) {
@@ -232,6 +234,313 @@ function extractName(text) {
     }
   }
   return null;
+}
+
+// ============================================
+// DETECCIÓN DE CONSULTAS EN LENGUAJE NATURAL
+// ============================================
+
+// Función para detectar consultas sobre servicios específicos
+function detectarConsultaServicio(texto) {
+  const textoLower = texto.toLowerCase();
+  
+  // Palabras clave para cada servicio con múltiples variantes
+  const keywords = {
+    1: {
+      palabras: [
+        "masaje", "masajes", "relajante", "relajantes", "terapéutico", 
+        "terapeutico", "terapia", "masajista", "masajear", "masajeo"
+      ],
+      precios: ["25", "s/25", "25 soles", "veinticinco", "25.00", "s/.25"],
+      sinonimos: [
+        "masaje de 25", "masaje 25 soles", "masaje relajante", 
+        "masaje terapéutico", "masaje de relajación"
+      ]
+    },
+    2: {
+      palabras: [
+        "limpieza facial", "facial", "limpieza", "rejuvenecer", "piel", 
+        "tratamiento facial", "cuidado facial", "limpieza de piel",
+        "facial profunda", "limpieza profunda"
+      ],
+      precios: ["60", "s/60", "60 soles", "sesenta", "60.00", "s/.60"],
+      sinonimos: [
+        "limpieza de piel", "tratamiento facial", "cuidado facial",
+        "limpieza de 60", "facial de 60"
+      ]
+    },
+    3: {
+      palabras: [
+        "manicura", "pedicura", "uñas", "unas", "manos", "pies", 
+        "esmalte", "esmaltado", "cuidado de uñas", "manicure", "pedicure",
+        "manicura y pedicura"
+      ],
+      precios: ["30", "s/30", "30 soles", "treinta", "30.00", "s/.30"],
+      sinonimos: [
+        "cuidado de uñas", "manicure", "pedicure", "uñas de manos",
+        "uñas de pies", "manicura de 30"
+      ]
+    },
+    4: {
+      palabras: [
+        "extensiones", "pestañas", "pestaña", "pestañ", "extension", 
+        "pestañas postizas", "pestañas sintéticas", "pestañas largas",
+        "pestañas voluminosas", "extensiones de pestañas"
+      ],
+      precios: ["80", "s/80", "80 soles", "ochenta", "80.00", "s/.80"],
+      sinonimos: [
+        "pestañas largas", "pestañas voluminosas", "extensiones de pestaña",
+        "pestañas de 80", "extensiones de 80"
+      ]
+    },
+    5: {
+      palabras: [
+        "cejas", "ceja", "diseño", "perfilado", "perfilar", 
+        "cejas definidas", "microblading", "diseño de cejas",
+        "perfilado de cejas", "cejas arregladas"
+      ],
+      precios: ["30", "s/30", "30 soles", "treinta", "30.00", "s/.30"],
+      sinonimos: [
+        "diseño de cejas", "perfilado de cejas", "arreglar cejas",
+        "cejas de 30", "diseño de ceja"
+      ]
+    },
+    6: {
+      palabras: [
+        "fisioterapia", "fisio", "terapias", "terapia", "recuperación", 
+        "recuperacion", "rehabilitación", "rehabilitacion", "terapia física",
+        "fisioterapeuta", "terapia de recuperación"
+      ],
+      precios: ["60", "s/60", "60 soles", "sesenta", "60.00", "s/.60"],
+      sinonimos: [
+        "terapia física", "fisioterapeuta", "terapia de recuperación",
+        "fisio de 60", "terapia de 60"
+      ]
+    }
+  };
+  
+  // Palabras que indican consulta/intención
+  const palabrasConsulta = [
+    "quiero", "deseo", "necesito", "busco", "tengo", "me interesa",
+    "información", "info", "precio", "cuesta", "costo", "cuánto", "cuanto",
+    "oferta", "promoción", "promocion", "servicio", "servicios",
+    "ver", "mostrar", "muestra", "dame", "dime", "cuéntame", "cuentame",
+    "detalles", "detalle", "sobre", "acerca", "de", "del", "la", "el",
+    "obtener", "conseguir", "solicitar", "pedir", "agendar", "reservar"
+  ];
+  
+  // Buscar coincidencias por servicio
+  for (const [numServicio, data] of Object.entries(keywords)) {
+    const tieneKeyword = data.palabras.some(palabra => textoLower.includes(palabra));
+    const tienePrecio = data.precios.some(precio => textoLower.includes(precio));
+    const tieneSinonimo = data.sinonimos.some(sin => textoLower.includes(sin));
+    const tieneConsulta = palabrasConsulta.some(pal => textoLower.includes(pal));
+    
+    // Si tiene keyword Y (precio O palabra de consulta O sinónimo)
+    if (tieneKeyword && (tienePrecio || tieneConsulta || tieneSinonimo)) {
+      return parseInt(numServicio);
+    }
+    
+    // Si tiene sinónimo y palabra de consulta
+    if (tieneSinonimo && tieneConsulta) {
+      return parseInt(numServicio);
+    }
+    
+    // Si solo tiene keyword pero es una consulta clara (sin ambigüedad)
+    if (tieneKeyword && tieneConsulta && textoLower.length > 10) {
+      return parseInt(numServicio);
+    }
+  }
+  
+  return null;
+}
+
+// Función para detectar intención de reserva en lenguaje natural
+function detectarIntencionReserva(texto) {
+  const textoLower = texto.toLowerCase();
+  
+  const palabrasReserva = [
+    "reservar", "reserva", "cita", "agendar", "agenda", "programar",
+    "quiero reservar", "deseo reservar", "necesito reservar",
+    "hacer una cita", "sacar cita", "pedir cita", "solicitar cita",
+    "disponibilidad", "horarios disponibles", "cuándo", "cuando",
+    "quiero una cita", "necesito cita", "puedo reservar", "puedo agendar",
+    "quiero agendar", "deseo agendar", "necesito agendar"
+  ];
+  
+  return palabrasReserva.some(palabra => textoLower.includes(palabra));
+}
+
+// Función para detectar consulta sobre promociones
+function detectarConsultaPromocion(texto) {
+  const textoLower = texto.toLowerCase();
+  
+  const palabrasPromo = [
+    "promoción", "promocion", "promo", "oferta", "descuento",
+    "combo", "paquete", "pack", "especial", "rebaja", "rebajas",
+    "qué promociones", "que promociones", "hay ofertas", "tienen descuentos",
+    "combo relax", "promoción especial", "oferta especial"
+  ];
+  
+  return palabrasPromo.some(palabra => textoLower.includes(palabra));
+}
+
+// Función para detectar consulta sobre ubicación
+function detectarConsultaUbicacion(texto) {
+  const textoLower = texto.toLowerCase();
+  
+  const palabrasUbicacion = [
+    "ubicación", "ubicacion", "dirección", "direccion", "direccion",
+    "dónde", "donde", "lugar", "local", "maps", "mapa",
+    "google maps", "cómo llegar", "como llegar", "adónde", "adonde",
+    "dónde están", "donde estan", "dónde se ubican", "donde se ubican",
+    "dirección del local", "direccion del local", "dónde queda", "donde queda"
+  ];
+  
+  return palabrasUbicacion.some(palabra => textoLower.includes(palabra));
+}
+
+// Función para detectar consulta sobre pagos
+function detectarConsultaPago(texto) {
+  const textoLower = texto.toLowerCase();
+  
+  const palabrasPago = [
+    "pago", "pagar", "precio", "precios", "costo", "costos",
+    "yape", "transferencia", "banco", "cuenta", "depósito", "deposito",
+    "método de pago", "metodo de pago", "formas de pago", "cómo pagar", 
+    "como pagar", "dónde pago", "donde pago", "número de yape", 
+    "numero de yape", "cuenta bancaria", "transferencia bancaria",
+    "cómo puedo pagar", "como puedo pagar", "formas de pago"
+  ];
+  
+  return palabrasPago.some(palabra => textoLower.includes(palabra));
+}
+
+// Función para detectar consulta sobre políticas
+function detectarConsultaPoliticas(texto) {
+  const textoLower = texto.toLowerCase();
+  
+  const palabrasPoliticas = [
+    "política", "politica", "políticas", "politicas", "reglas", "normas",
+    "cancelación", "cancelacion", "cancelar", "modificar", "cambio",
+    "reembolso", "devolución", "devolucion", "términos", "terminos",
+    "puedo cancelar", "cómo cancelar", "como cancelar",
+    "política de cancelación", "politica de cancelacion",
+    "términos y condiciones", "terminos y condiciones"
+  ];
+  
+  return palabrasPoliticas.some(palabra => textoLower.includes(palabra));
+}
+
+// Función mejorada para extraer fecha y hora de múltiples formatos
+function extraerFechaHora(texto) {
+  const textoLower = texto.toLowerCase();
+  let fechaHora = null;
+  let fechaMatch = null;
+  let horaMatch = null;
+  
+  // Patrones de fecha: DD/MM/YYYY, DD-MM-YYYY, DD/MM/YY, DD-MM-YY
+  const patronesFecha = [
+    /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/,  // DD/MM/YYYY o DD-MM-YYYY
+    /(\d{1,2})\s+de\s+(\w+)\s+de\s+(\d{4})/,     // DD de MES de YYYY
+  ];
+  
+  // Patrones de hora: HH:MM, HH:MM AM/PM, a las HH
+  const patronesHora = [
+    /(\d{1,2}):(\d{2})\s*(am|pm)?/i,             // HH:MM o HH:MM AM/PM
+    /a\s+las\s+(\d{1,2})\s*(de\s+la\s+)?(mañana|tarde|noche)?/i,  // a las HH
+    /(\d{1,2})\s*(am|pm|de\s+la\s+mañana|de\s+la\s+tarde|de\s+la\s+noche)/i,
+  ];
+  
+  // Buscar fecha
+  for (const patron of patronesFecha) {
+    const match = texto.match(patron);
+    if (match) {
+      fechaMatch = match;
+      break;
+    }
+  }
+  
+  // Buscar hora
+  for (const patron of patronesHora) {
+    const match = texto.match(patron);
+    if (match) {
+      horaMatch = match;
+      break;
+    }
+  }
+  
+  // Procesar fecha si se encontró
+  if (fechaMatch) {
+    try {
+      let dia, mes, año;
+      
+      if (fechaMatch[0].includes('/') || fechaMatch[0].includes('-')) {
+        // Formato DD/MM/YYYY o DD-MM-YYYY
+        dia = parseInt(fechaMatch[1]);
+        mes = parseInt(fechaMatch[2]) - 1; // Mes es 0-indexed
+        año = parseInt(
+          fechaMatch[3].length === 2 ? "20" + fechaMatch[3] : fechaMatch[3]
+        );
+      } else {
+        // Formato "DD de MES de YYYY"
+        dia = parseInt(fechaMatch[1]);
+        const meses = {
+          "enero": 0, "febrero": 1, "marzo": 2, "abril": 3,
+          "mayo": 4, "junio": 5, "julio": 6, "agosto": 7,
+          "septiembre": 8, "octubre": 9, "noviembre": 10, "diciembre": 11
+        };
+        mes = meses[fechaMatch[2].toLowerCase()] || 0;
+        año = parseInt(fechaMatch[3]);
+      }
+      
+      // Procesar hora si se encontró
+      let hora = 14; // Hora por defecto: 2 PM
+      let minuto = 0;
+      
+      if (horaMatch) {
+        if (horaMatch[0].includes(':')) {
+          // Formato HH:MM
+          hora = parseInt(horaMatch[1]);
+          minuto = parseInt(horaMatch[2]);
+          
+          // Ajustar para AM/PM
+          if (horaMatch[3]) {
+            const ampm = horaMatch[3].toLowerCase();
+            if (ampm === 'pm' && hora < 12) hora += 12;
+            if (ampm === 'am' && hora === 12) hora = 0;
+          }
+        } else {
+          // Formato "a las HH" o "HH AM/PM"
+          hora = parseInt(horaMatch[1] || horaMatch[0].match(/\d+/)?.[0] || 14);
+          
+          // Ajustar según mañana/tarde/noche
+          if (horaMatch[0].includes('mañana')) {
+            if (hora === 12) hora = 0;
+          } else if (horaMatch[0].includes('tarde')) {
+            if (hora < 12) hora += 12;
+          } else if (horaMatch[0].includes('noche')) {
+            if (hora < 8) hora += 12;
+          }
+        }
+      }
+      
+      fechaHora = new Date(año, mes, dia, hora, minuto);
+      
+      // Validar que la fecha sea válida y futura
+      if (isNaN(fechaHora.getTime()) || fechaHora <= new Date()) {
+        fechaHora = null;
+      }
+    } catch (error) {
+      logMessage("WARNING", `Error al parsear fecha/hora`, {
+        error: error.message,
+        texto: texto.substring(0, 50)
+      });
+      fechaHora = null;
+    }
+  }
+  
+  return fechaHora;
 }
 
 // Guardar reserva para recordatorio
@@ -1048,27 +1357,48 @@ function start(client) {
       // Mensaje de bienvenida para nuevos usuarios (solo si no tiene estado y no se ha enviado bienvenida)
       // Esto evita enviar bienvenida a usuarios que ya interactuaron
       if (!userState[userId] && !userData[userId]?.bienvenidaEnviada) {
-        userState[userId] = "menu";
-        if (!userData[userId]) userData[userId] = {};
-        userData[userId].bienvenidaEnviada = true;
-        logMessage("INFO", `Nuevo usuario detectado: ${userName}`);
+        // ANTES de enviar bienvenida, verificar si hay una consulta directa
+        // Si el usuario pregunta algo específico, responder directamente sin bienvenida genérica
+        
+        const servicioDetectado = detectarConsultaServicio(textLower);
+        const intencionReserva = detectarIntencionReserva(textLower);
+        const consultaPromo = detectarConsultaPromocion(textLower);
+        const consultaUbicacion = detectarConsultaUbicacion(textLower);
+        const consultaPago = detectarConsultaPago(textLower);
+        const consultaPoliticas = detectarConsultaPoliticas(textLower);
+        
+        // Si hay una consulta específica, procesarla directamente
+        if (servicioDetectado || intencionReserva || consultaPromo || 
+            consultaUbicacion || consultaPago || consultaPoliticas) {
+          // Establecer estado para que se procese la consulta
+          userState[userId] = "menu";
+          if (!userData[userId]) userData[userId] = {};
+          userData[userId].bienvenidaEnviada = true;
+          // No hacer return, dejar que el flujo continúe para procesar la consulta
+        } else {
+          // Si no hay consulta específica, enviar bienvenida normal
+          userState[userId] = "menu";
+          if (!userData[userId]) userData[userId] = {};
+          userData[userId].bienvenidaEnviada = true;
+          logMessage("INFO", `Nuevo usuario detectado: ${userName}`);
 
-        try {
-          const saludoHora = getSaludoPorHora();
-          await enviarMensajeSeguro(
-            client,
-            userId,
-            `${saludoHora}! 👋\n\n¡Hola ${userName}! Bienvenido a *Essenza Spa*.\n\n` +
-              `Somos especialistas en bienestar y belleza. 💆‍♀️✨\n\n` +
-              `Escribe *Menu* para ver nuestras opciones y servicios disponibles.`
-          );
-          logMessage("SUCCESS", `Mensaje de bienvenida enviado a ${userName}`);
-        } catch (error) {
-          logMessage("ERROR", `Error al enviar mensaje de bienvenida`, {
-            error: error.message,
-          });
+          try {
+            const saludoHora = getSaludoPorHora();
+            await enviarMensajeSeguro(
+              client,
+              userId,
+              `${saludoHora}! 👋\n\n¡Hola ${userName}! Bienvenido a *Essenza Spa*.\n\n` +
+                `Somos especialistas en bienestar y belleza. 💆‍♀️✨\n\n` +
+                `Escribe *Menu* para ver nuestras opciones y servicios disponibles.`
+            );
+            logMessage("SUCCESS", `Mensaje de bienvenida enviado a ${userName}`);
+          } catch (error) {
+            logMessage("ERROR", `Error al enviar mensaje de bienvenida`, {
+              error: error.message,
+            });
+          }
+          return;
         }
-        return;
       }
 
       // ============================================
@@ -1170,6 +1500,201 @@ function start(client) {
       // ============================================
       if (userState[userId] === "menu") {
         try {
+          // PRIMERO: Detectar consultas en lenguaje natural ANTES del switch
+          // Esto permite que el bot entienda consultas como "quiero masaje de 25 soles"
+          
+          // 1. Detectar consulta sobre servicio específico
+          const servicioDetectado = detectarConsultaServicio(textLower);
+          if (servicioDetectado) {
+            const serv = servicios[servicioDetectado];
+            logMessage(
+              "INFO",
+              `Usuario ${userName} consultó sobre servicio ${servicioDetectado} usando lenguaje natural`,
+              { consulta: textLower }
+            );
+
+            let detalle = `💆‍♀️ *${serv.nombre}*\n\n`;
+            detalle += `📝 *Descripción:*\n${serv.descripcion}\n\n`;
+            detalle += `⏱️ *Duración:* ${serv.duracion}\n`;
+            detalle += `💰 *Precio:* ${serv.precio}\n\n`;
+            detalle += `✨ *Beneficios:*\n`;
+            serv.beneficios.forEach((ben) => {
+              detalle += `• ${ben}\n`;
+            });
+            detalle += `\n¿Te interesa este servicio? Escribe *3* para reservar o *Menu* para volver al menú principal`;
+
+            await enviarMensajeSeguro(client, userId, detalle);
+
+            // Si hay imagen configurada, intentar enviarla
+            if (serv.imagen && fs.existsSync(serv.imagen)) {
+              try {
+                await client.sendImage(
+                  userId,
+                  serv.imagen,
+                  `imagen-${servicioDetectado}.jpg`,
+                  `Imagen de ${serv.nombre}`
+                );
+              } catch (error) {
+                logMessage(
+                  "WARNING",
+                  `No se pudo enviar imagen del servicio ${servicioDetectado}`,
+                  { error: error.message }
+                );
+              }
+            }
+            return;
+          }
+          
+          // 2. Detectar intención de reserva
+          if (detectarIntencionReserva(textLower)) {
+            // Activar flujo de reserva
+            userState[userId] = "reserva";
+            humanModeUsers.add(userId);
+            estadisticas.reservasSolicitadas++;
+            logMessage(
+              "INFO",
+              `Usuario ${userName} solicitó reserva usando lenguaje natural`
+            );
+
+            try {
+              await enviarMensajeSeguro(
+                client,
+                ADMIN_NUMBER,
+                `🔔 *NUEVA SOLICITUD DE RESERVA*\n\n` +
+                  `Usuario: ${userName}\n` +
+                  `Número: ${extraerNumero(userId)}\n\n` +
+                  `Por favor contacta al cliente para confirmar los detalles.`
+              );
+              await enviarMensajeSeguro(
+                client,
+                userId,
+                "📅 *SOLICITUD DE RESERVA*\n\n" +
+                  "Un asesor se pondrá en contacto contigo pronto.\n\n" +
+                  "Por favor, envía la siguiente información:\n" +
+                  "• Tu nombre completo\n" +
+                  "• Servicio deseado\n" +
+                  "• Fecha y hora preferida\n\n" +
+                  "El bot dejará de responder automáticamente."
+              );
+              logMessage(
+                "SUCCESS",
+                `Solicitud de reserva procesada para ${userName}`
+              );
+            } catch (error) {
+              logMessage("ERROR", `Error al procesar reserva`, {
+                error: error.message,
+              });
+            }
+            return;
+          }
+          
+          // 3. Detectar consulta sobre promociones
+          if (detectarConsultaPromocion(textLower)) {
+            logMessage(
+              "INFO",
+              `Usuario ${userName} consultó sobre promociones usando lenguaje natural`
+            );
+            await enviarMensajeSeguro(
+              client,
+              userId,
+              "🌟 *PROMOCIÓN ESPECIAL*\n\n" +
+                "💆 *Combo Relax*\n" +
+                "Masaje Relajante + Limpieza Facial\n\n" +
+                "💰 *Precio:* S/120 (Ahorra S/60)\n" +
+                "⏱️ *Duración:* 90 minutos\n\n" +
+                "✨ *Beneficios:*\n" +
+                "• Relajación completa\n" +
+                "• Piel renovada y luminosa\n" +
+                "• Alivio de tensiones\n\n" +
+                "¡Aprovecha esta oferta limitada!\n\n" +
+                "Escribe *Menu* para volver"
+            );
+            logMessage("SUCCESS", `Promoción enviada a ${userName}`);
+            return;
+          }
+          
+          // 4. Detectar consulta sobre ubicación
+          if (detectarConsultaUbicacion(textLower)) {
+            logMessage("INFO", `Usuario ${userName} consultó sobre ubicación usando lenguaje natural`);
+            await enviarMensajeSeguro(
+              client,
+              userId,
+              `📍 *NUESTRA UBICACIÓN*\n\n` +
+                `🏢 ${UBICACION}\n\n` +
+                `🕐 *Horario de atención:*\n${HORARIO_ATENCION}\n\n` +
+                `🗺️ [Ver en Google Maps](${MAPS_LINK})\n\n` +
+                "Escribe *Menu* para volver"
+            );
+            logMessage("SUCCESS", `Ubicación enviada a ${userName}`);
+            return;
+          }
+          
+          // 5. Detectar consulta sobre pagos
+          if (detectarConsultaPago(textLower)) {
+            logMessage(
+              "INFO",
+              `Usuario ${userName} consultó sobre pagos usando lenguaje natural`
+            );
+            await enviarMensajeSeguro(
+              client,
+              userId,
+              "💳 *INFORMACIÓN DE PAGO*\n\n" +
+                "📱 *Yape:*\n" +
+                `Número: *${YAPE_NUMERO}*\n` +
+                `Titular: *${YAPE_TITULAR}*\n\n` +
+                "🏦 *Transferencia Bancaria:*\n" +
+                `Cuenta: *${BANCO_CUENTA}*\n` +
+                `Titular: *${YAPE_TITULAR}*\n\n` +
+                "Escribe *Menu* para volver"
+            );
+            logMessage(
+              "SUCCESS",
+              `Información de pago enviada a ${userName}`
+            );
+            return;
+          }
+          
+          // 6. Detectar consulta sobre políticas
+          if (detectarConsultaPoliticas(textLower)) {
+            logMessage("INFO", `Usuario ${userName} consultó sobre políticas usando lenguaje natural`);
+            await enviarMensajeSeguro(
+              client,
+              userId,
+              "📜 *POLÍTICAS DE RESERVA*\n\n" +
+                "⏰ *Cancelación/Modificación:*\n" +
+                "Debe realizarse con mínimo 24 horas de anticipación.\n\n" +
+                "❌ *Cancelaciones tardías:*\n" +
+                "Pueden estar sujetas a cargos adicionales.\n\n" +
+                "✅ *Confirmación:*\n" +
+                "Todas las reservas deben ser confirmadas por un asesor.\n\n" +
+                "Escribe *Menu* para volver"
+            );
+            logMessage("SUCCESS", `Políticas enviadas a ${userName}`);
+            return;
+          }
+          
+          // 7. Detectar consulta genérica sobre servicios (sin especificar cuál)
+          if (
+            (textLower.includes("servicio") || textLower.includes("servicios")) &&
+            !textLower.match(/servicio\s*[1-6]/) // No es un número específico
+          ) {
+            // Mostrar lista de servicios
+            logMessage("INFO", `Usuario ${userName} consultó sobre servicios en general`);
+            userState[userId] = "servicios";
+            let lista = "💆‍♀️ *NUESTROS SERVICIOS:*\n\n";
+            Object.keys(servicios).forEach((k) => {
+              const serv = servicios[k];
+              lista += `${k}️⃣ *${serv.nombre}*\n`;
+              lista += `   ⏱️ ${serv.duracion} | 💰 ${serv.precio}\n\n`;
+            });
+            lista +=
+              "Escribe el *número* del servicio (1-6) para más detalles o *Menu* para volver";
+            await enviarMensajeSeguro(client, userId, lista);
+            logMessage("SUCCESS", `Lista de servicios enviada a ${userName}`);
+            return;
+          }
+
+          // Si no se detectó ninguna consulta en lenguaje natural, procesar opciones normales
           switch (textLower) {
             case "1":
               logMessage("INFO", `Usuario ${userName} solicitó ver servicios`);
@@ -1394,77 +1919,59 @@ function start(client) {
         }
 
         // Intentar extraer información de reserva del mensaje
-        const fechaMatch = text.match(
-          /(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/
-        );
-        const horaMatch = text.match(/(\d{1,2}):(\d{2})/);
+        // Usar la función mejorada para extraer fecha y hora
+        const fechaHora = extraerFechaHora(text);
+        
+        // Detectar servicio mencionado
         const servicioMatch = text.match(
-          /(masaje|limpieza|manicura|pedicura|extensiones|pestañas|cejas|fisioterapia)/i
+          /(masaje|masajes|limpieza|facial|manicura|pedicura|extensiones|pestañas|pestaña|cejas|ceja|fisioterapia|fisio)/i
         );
+        
+        // También intentar detectar servicio usando la función de detección
+        const servicioDetectado = detectarConsultaServicio(text);
 
-        if (fechaMatch || horaMatch || servicioMatch) {
+        if (fechaHora || servicioMatch || servicioDetectado) {
           // Guardar información de reserva para recordatorio
-          const servicioTexto = servicioMatch
-            ? servicioMatch[0]
-            : "Servicio no especificado";
-
-          // Intentar construir fecha válida
-          let fechaHora = null;
-          if (fechaMatch && horaMatch) {
-            try {
-              // Formato: DD/MM/YYYY HH:MM
-              const dia = parseInt(fechaMatch[1]);
-              const mes = parseInt(fechaMatch[2]) - 1; // Mes es 0-indexed
-              const año = parseInt(
-                fechaMatch[3].length === 2
-                  ? "20" + fechaMatch[3]
-                  : fechaMatch[3]
-              );
-              const hora = parseInt(horaMatch[1]);
-              const minuto = parseInt(horaMatch[2]);
-
-              fechaHora = new Date(año, mes, dia, hora, minuto);
-
-              // Validar que la fecha sea válida y futura
-              if (isNaN(fechaHora.getTime()) || fechaHora <= new Date()) {
-                fechaHora = null;
-                logMessage(
-                  "WARNING",
-                  `Fecha inválida o pasada extraída de reserva`
-                );
-              }
-            } catch (error) {
-              logMessage("WARNING", `Error al parsear fecha de reserva`, {
-                error: error.message,
-              });
-              fechaHora = null;
-            }
+          let servicioTexto = "Servicio no especificado";
+          
+          if (servicioDetectado) {
+            servicioTexto = servicios[servicioDetectado].nombre;
+          } else if (servicioMatch) {
+            servicioTexto = servicioMatch[0];
           }
 
-          // Solo guardar si tenemos fecha válida
-          if (fechaHora) {
-            guardarReserva(userId, userName, servicioTexto, fechaHora);
+          // Guardar si tenemos fecha válida O servicio detectado
+          if (fechaHora || servicioDetectado) {
+            // Solo guardar reserva si tenemos fecha válida (para recordatorios)
+            if (fechaHora) {
+              guardarReserva(userId, userName, servicioTexto, fechaHora);
+            }
+            
             logMessage(
               "INFO",
               `Información de reserva detectada y guardada de ${userName}`,
               {
                 servicio: servicioTexto,
-                fecha: fechaHora.toLocaleString("es-PE"),
+                fecha: fechaHora ? fechaHora.toLocaleString("es-PE") : "Pendiente",
               }
             );
 
             // Confirmar que se recibió la información
             try {
-              await enviarMensajeSeguro(
-                client,
-                userId,
-                "✅ *Información recibida*\n\n" +
-                  "Hemos registrado tu información de reserva:\n" +
-                  `📅 *Servicio:* ${servicioTexto}\n` +
-                  `⏰ *Fecha/Hora:* ${fechaHora.toLocaleString("es-PE")}\n\n` +
-                  "Un asesor se pondrá en contacto contigo pronto para confirmar los detalles.\n\n" +
-                  "Si necesitas hacer algún cambio, escribe *Menu* o *Cancelar*."
-              );
+              let mensajeConfirmacion = "✅ *Información recibida*\n\n";
+              mensajeConfirmacion += "Hemos registrado tu información de reserva:\n";
+              mensajeConfirmacion += `📅 *Servicio:* ${servicioTexto}\n`;
+              
+              if (fechaHora) {
+                mensajeConfirmacion += `⏰ *Fecha/Hora:* ${fechaHora.toLocaleString("es-PE")}\n\n`;
+              } else {
+                mensajeConfirmacion += `⏰ *Fecha/Hora:* Pendiente\n\n`;
+              }
+              
+              mensajeConfirmacion += "Un asesor se pondrá en contacto contigo pronto para confirmar los detalles.\n\n";
+              mensajeConfirmacion += "Si necesitas hacer algún cambio, escribe *Menu* o *Cancelar*.";
+              
+              await enviarMensajeSeguro(client, userId, mensajeConfirmacion);
               ultimaRespuestaReserva[userId] = new Date();
               logMessage(
                 "SUCCESS",
