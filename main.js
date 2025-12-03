@@ -1909,7 +1909,41 @@ function start(client) {
       }
 
       // ============================================
-      // SALIDA DEL MODO ASESOR (solo si está activo)
+      // SI ESTÁ EN MODO RESERVA, verificar cancelación PRIMERO
+      // (antes de la verificación general de humanModeUsers)
+      // ============================================
+      if (userState[userId] === "reserva") {
+        // Permitir salir del modo reserva
+        if (
+          fuzzyMatch(textLower, "cancelar") ||
+          fuzzyMatch(textLower, "volver") ||
+          fuzzyMatch(textLower, "no quiero reservar")
+        ) {
+          userState[userId] = null;
+          humanModeUsers.delete(userId);
+          logMessage(
+            "INFO",
+            `Usuario ${userName} canceló el proceso de reserva`
+          );
+          try {
+            await enviarMensajeSeguro(
+              client,
+              userId,
+              "✅ Entendido, he cancelado tu solicitud de reserva. ¿En qué más puedo ayudarte? 😊"
+            );
+          } catch (error) {
+            logMessage("ERROR", `Error al cancelar reserva`, {
+              error: error.message,
+            });
+          }
+          return;
+        }
+        // Si está en modo reserva, no procesar más (el asesor maneja)
+        return;
+      }
+
+      // ============================================
+      // SALIDA DEL MODO ASESOR (solo si está activo y NO en reserva)
       // ============================================
       if (humanModeUsers.has(userId)) {
         // Si el usuario quiere volver a hablar con la IA
@@ -2074,39 +2108,6 @@ function start(client) {
             }
           );
         }
-        return;
-      }
-
-      // ============================================
-      // SI ESTÁ EN MODO RESERVA, solo permitir salir
-      // ============================================
-      if (userState[userId] === "reserva") {
-        // Permitir salir del modo reserva
-        if (
-          fuzzyMatch(textLower, "cancelar") ||
-          fuzzyMatch(textLower, "volver") ||
-          fuzzyMatch(textLower, "no quiero reservar")
-        ) {
-          userState[userId] = null;
-          humanModeUsers.delete(userId);
-          logMessage(
-            "INFO",
-            `Usuario ${userName} canceló el proceso de reserva`
-          );
-          try {
-            await enviarMensajeSeguro(
-              client,
-              userId,
-              "✅ Entendido, he cancelado tu solicitud de reserva. ¿En qué más puedo ayudarte? 😊"
-            );
-          } catch (error) {
-            logMessage("ERROR", `Error al cancelar reserva`, {
-              error: error.message,
-            });
-          }
-          return;
-        }
-        // Si está en modo reserva, no procesar más (el asesor maneja)
         return;
       }
 
