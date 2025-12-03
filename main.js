@@ -1161,13 +1161,27 @@ function logMessage(type, message, data = null) {
 }
 
 // Inicializar OpenAI después de definir logMessage
-if (process.env.OPENAI_API_KEY) {
-  openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-  });
-  logMessage("SUCCESS", "OpenAI inicializado correctamente");
+if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim() !== "") {
+  try {
+    openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY.trim(),
+    });
+    logMessage("SUCCESS", "✅ OpenAI inicializado correctamente");
+  } catch (error) {
+    logMessage("ERROR", "Error al inicializar OpenAI", {
+      error: error.message,
+    });
+    openai = null;
+  }
 } else {
-  logMessage("WARNING", "OpenAI no disponible - OPENAI_API_KEY no configurada");
+  logMessage(
+    "WARNING",
+    "⚠️ OpenAI no disponible - OPENAI_API_KEY no configurada o está vacía"
+  );
+  logMessage(
+    "INFO",
+    "💡 Para habilitar OpenAI, configura la variable de entorno OPENAI_API_KEY"
+  );
 }
 
 // ============================================
