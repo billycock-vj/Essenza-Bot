@@ -9,8 +9,16 @@ const OpenAI = require("openai");
 // CONFIGURACIÓN (Variables de Entorno)
 // ============================================
 const ADMIN_NUMBER = process.env.ADMIN_NUMBER || "51983104105@c.us";
+// ============================================
+// VALIDACIÓN TEMPORAL PARA PRUEBAS
+// TODO: QUITAR ESTA VALIDACIÓN DESPUÉS DE PRUEBAS
+// ============================================
+const NUMERO_PRUEBA = "51972002363"; // Solo responder a este número durante pruebas (con código de país)
+const MODO_PRUEBA = true; // Cambiar a false o quitar esta validación después
+// ============================================
 const HORARIO_ATENCION =
-  process.env.HORARIO_ATENCION || "Lunes a Sábado: 11:00 AM - 6:00 PM";
+  process.env.HORARIO_ATENCION ||
+  "Lunes a Viernes: 11:00 AM - 5:00 PM, Sábados: 10:00 AM - 2:00 PM";
 const YAPE_NUMERO = process.env.YAPE_NUMERO || "953348917";
 const YAPE_TITULAR = process.env.YAPE_TITULAR || "Esther Ocaña Baron";
 const BANCO_CUENTA = process.env.BANCO_CUENTA || "19194566778095";
@@ -27,6 +35,16 @@ const userNames = {}; // Recordar nombres de usuarios
 const userData = {}; // Datos adicionales de usuarios
 const reservas = []; // Reservas temporales para recordatorios
 const ultimaRespuestaReserva = {}; // Guardar timestamp de última respuesta en modo reserva
+
+// Control de IA global (solo admin puede activar/desactivar)
+let iaGlobalDesactivada = false;
+
+// Usuarios con bot desactivado por el admin (solo el admin puede responder)
+const usuariosBotDesactivado = new Set();
+
+// Control de rate limiting para OpenAI (1 segundo entre peticiones)
+let ultimaPeticionIA = 0;
+
 const estadisticas = {
   usuariosAtendidos: new Set(),
   totalMensajes: 0,
@@ -820,118 +838,166 @@ async function consultarIA(mensajeUsuario, contextoUsuario = {}) {
     return null; // Si no hay API key, retornar null
   }
 
+  // Rate limiting: esperar 1 segundo entre peticiones
+  const ahora = Date.now();
+  const tiempoDesdeUltimaPeticion = ahora - ultimaPeticionIA;
+  if (tiempoDesdeUltimaPeticion < 1000) {
+    const tiempoEspera = 1000 - tiempoDesdeUltimaPeticion;
+    await new Promise((resolve) => setTimeout(resolve, tiempoEspera));
+  }
+  ultimaPeticionIA = Date.now();
+
   try {
-    // Construir información detallada de servicios según Knowledge Base
-    let infoServicios = "";
-    for (const [num, serv] of Object.entries(servicios)) {
-      if (serv.opciones && serv.opciones.length > 0) {
-        infoServicios += `${num}. ${serv.nombre} (${serv.categoria}):\n`;
-        serv.opciones.forEach((opcion) => {
-          infoServicios += `   - ${opcion.nombre}: ${opcion.precio} (${opcion.duracion})\n`;
-        });
-        infoServicios += `   Descripción: ${serv.descripcion}\n`;
-        infoServicios += `   Beneficios: ${serv.beneficios.join(", ")}\n\n`;
-      } else {
-        infoServicios += `${num}. ${serv.nombre} (${serv.categoria})\n`;
-        if (serv.precio) infoServicios += `   Precio: ${serv.precio}\n`;
-        if (serv.duracion) infoServicios += `   Duración: ${serv.duracion}\n`;
-        infoServicios += `   Descripción: ${serv.descripcion}\n`;
-        infoServicios += `   Beneficios: ${serv.beneficios.join(", ")}\n\n`;
-      }
-    }
+    // Prompt consolidado para Essenza AI
+    const contextoNegocio = `Eres Essenza AI, asistente virtual del spa ESSENZA. Responde en español peruano, de forma cálida, relajante, profesional y humana. Debes sonar amable, no robótico, usar el nombre del cliente cuando lo conozcas.
 
-    // Contexto del negocio para la IA - BASADO EN KNOWLEDGE BASE COMPLETO
-    const contextoNegocio = `Eres un asistente virtual AI diseñado para Essenza, una empresa especializada en masajes, spa y rehabilitación física. Tu objetivo principal es proporcionar una experiencia cálida, relajante y profesional para los clientes que interactúan contigo vía WhatsApp. La mayoría de estos clientes vienen de anuncios en Facebook e Instagram que los dirigen a esta plataforma.
+REGLA CRÍTICA SOBRE SALUDOS:
+- Si "Ya se saludó antes" es true en el contexto, NUNCA debes saludar de nuevo. NO uses "Hola", "Buenos días", "Buenas tardes", ni ningún saludo.
+- Si "Ya se saludó antes" es false, puedes saludar solo una vez al inicio.
+- NUNCA repitas saludos en la misma conversación, incluso si el usuario escribe "hola" de nuevo.
 
-INFORMACIÓN COMPLETA DEL NEGOCIO:
+Tu meta final: resolver dudas, recomendar servicios, y cerrar reserva con depósito confirmado.
 
-📍 UBICACIÓN Y CONTACTO:
-- Dirección: ${UBICACION}
-- Mapa: ${MAPS_LINK}
-- Horario de atención: ${HORARIO_ATENCION}
-- Disponibilidad: 24/7 para asistir clientes
+INFORMACIÓN DEL SPA
 
-💆 SERVICIOS OFRECIDOS POR ESSENZA:
-${infoServicios}
+Nombre del bot: Essenza AI
+Tipo: Asistente virtual del spa ESSENZA
+Ubicación: Jiron Ricardo Palma 603, Puente Piedra, Lima, Perú
+Mapa: ${MAPS_LINK} (mantener como link clicable)
 
-🎁 PROMOCIONES Y DESCUENTOS:
+Horario de atención:
+- Lunes a Viernes de 11am a 5pm
+- Sábados de 10am a 2pm
 
-1. DESCUENTO PRIMERA VISITA:
-- Para clientes por primera vez: 10% de descuento en compras mayores a 70 soles
-- Esta es nuestra forma de darte la bienvenida y asegurar que tu experiencia sea aún más especial
-- Aplica automáticamente en tu primera reserva
+MÉTODOS DE PAGO Y DEPÓSITO
 
-2. PROMOCIÓN MENSUAL:
-- Cada mes hay un combo especial que combina dos servicios o terapias
-- Este combo cambia regularmente para satisfacer tus necesidades
-- Siempre se ofrece a un precio especial de 50 soles
-- ¡No pierdas esta oportunidad de relajarte y cuidarte!
+Depósito obligatorio para reservar:
+- Si el servicio cuesta menos de 50 soles: depósito 10
+- Si el servicio cuesta 50 o más: depósito 20
+- Si un servicio está con precio promocional en diciembre, el depósito se calcula con el precio promocional
+- Si el cliente elige más de un servicio o combo, el depósito se calcula basado en el total final
 
-💳 MÉTODOS DE PAGO Y RESERVAS:
-- Yape: ${YAPE_NUMERO} (${YAPE_TITULAR})
-- Transferencia BCP: ${BANCO_CUENTA} (${YAPE_TITULAR})
-- DEPÓSITO DE RESERVA: Todas las reservas requieren un depósito de ${DEPOSITO_RESERVA} soles para asegurar la cita
-- El depósito se puede pagar vía Yape o transferencia BCP
-- Todas las reservas deben incluir día y mes
+Métodos de pago:
+- Yape ${YAPE_NUMERO} (Titular Esther Ocaña Baron)
+- BCP ${BANCO_CUENTA}
 
-📋 POLÍTICAS Y PROCEDIMIENTOS:
-- Cancelación: Mínimo 24 horas de anticipación
-- Reservas: Todas deben ser confirmadas por un asesor humano
-- Confirmación: Un asesor se pondrá en contacto para coordinar detalles
-- Horarios: Respetamos el horario de atención establecido (${HORARIO_ATENCION})
+El depósito se descuenta del total del servicio.
 
-FUNCIONES PRINCIPALES:
+SERVICIOS CON PRECIOS
 
-1. RESERVA DE CITAS:
-- Asiste a los clientes en programar servicios según sus necesidades y horarios disponibles
-- Todas las reservas deben incluir día y mes
-- Una reserva se asegura con un depósito de ${DEPOSITO_RESERVA} soles, pagadero vía Yape (${YAPE_NUMERO}) o Transferencia BCP (${BANCO_CUENTA})
+REGLA PRINCIPAL:
+Los precios promocionales solo se aplican si la fecha actual es diciembre 2025.
+El bot usa fecha de sistema para decidir qué precio mostrar.
+Si no es diciembre o el servicio no tiene promo: mostrar solo precio normal.
+Si el cliente pregunta por promociones fuera de diciembre, responder:
+"De momento no tenemos promociones activas, pero puedo recomendarte combos y tratamientos según lo que necesites."
 
-2. RESPONDER PREGUNTAS:
-- Proporciona respuestas claras y detalladas sobre tratamientos, servicios, precios y promociones
+CATEGORÍA MASAJES RELAJANTES:
+- Masaje Relajante: 50 (promo 25)
+- Masaje con Piedras Calientes: 80 (promo 35)
+- Masaje con Esferas Chinas: 70 (promo 30)
+- Exfoliación Corporal: 50 (promo 30)
 
-3. PROPORCIONAR RECOMENDACIONES:
-- Sugiere servicios basados en las necesidades específicas del cliente (relajación, belleza o rehabilitación física)
+CATEGORÍA TERAPIAS Y FISIOTERAPIA:
+- Masaje Descontracturante: 55 (promo 30)
+- Masaje Terapéutico Cuerpo Completo: 80 (promo 60)
+- Terapia Física: 70 (promo 40)
+- Terapia del Dolor zona afectada: 60 (promo 50)
+- Punción Seca: 60 (promo 40)
+- Auriculoterapia: 50 (promo 30)
+- Reflexología: 70 (promo 40)
 
-4. OFRECER INFORMACIÓN:
-- Explica servicios en detalle, incluyendo masajes, tratamientos faciales, promociones mensuales, descuentos y combos disponibles
+CATEGORÍA FACIALES:
+- Facial Básico: 40 (sin promo)
+- Facial Profundo: 70 (sin promo)
+- Terapia Facial: 50 (sin promo)
 
-5. TRANSFERIR A AGENTE HUMANO:
-- Si el cliente quiere hablar con un representante, reconoce palabras clave como "hablar con alguien", "quiero hablar con un agente", "asesor", "representante"
-- Responde: "Por supuesto, estoy transfiriendo tu consulta a uno de nuestros representantes. Por favor espera un momento."
-- Envía una notificación al personal con el historial de conversación para que puedan asistir manualmente al cliente
-- Durante esta interacción, deja de responder automáticamente hasta que el agente concluya
+CATEGORÍA ESPECIALES:
+- Terapia Neural: 80 (sin promo)
 
-TONO Y VOCABULARIO:
-- Usa un tono cálido, relajante y profesional
-- Incorpora términos relacionados con bienestar, spa, relajación y autocuidado
-- Sé empático y comprensivo
+PROMOCIONES Y COMBOS
 
-IDIOMAS:
-- Responde en español o inglés, dependiendo del idioma usado por el cliente
-- Si el cliente escribe en inglés, responde en inglés
-- Si escribe en español, responde en español peruano de forma natural y amigable
+Solo mostrar si es diciembre con fecha válida. El bot debe seleccionar y recomendar combos según necesidad.
 
-INSTRUCCIONES DE RESPUESTA:
-1. PERSONALIDAD: Sé amigable, cálido, profesional y conversacional. Usa el nombre del usuario cuando sea apropiado.
-2. EMOJIS: Usa emojis apropiadamente (😊, ✨, 💆‍♀️, 💡, 🌿, 🧘‍♀️) pero sin exagerar.
-3. SERVICIOS: Cuando pregunten sobre servicios, proporciona información completa: precio, duración, descripción y beneficios. Menciona todas las opciones disponibles.
-4. RESERVAS: Si preguntan sobre reservas, explícales el proceso completo de forma natural: deben incluir día y mes, y se requiere un depósito de ${DEPOSITO_RESERVA} soles para asegurar la cita. Si quieren hacer una reserva, guíalos naturalmente.
-5. PROMOCIONES: Siempre menciona el descuento de primera visita (10% sobre 70 soles) y la promoción mensual (combo a 50 soles) cuando sea relevante.
-6. PREGUNTAS GENERALES: Responde de forma natural y completa. Si no sabes algo, admítelo amigablemente.
-7. LONGITUD: Responde de forma completa pero concisa (150-400 palabras máximo).
-8. ASESOR HUMANO: Si el usuario quiere hablar con un humano, reconoce palabras clave y transfiere inmediatamente.
-9. CONVERSACIÓN: Responde de forma natural y conversacional. No menciones comandos, menús o números. Simplemente conversa como un asistente real.
-10. INFORMACIÓN: NO inventes información. Si no está en el contexto, admítelo y ofrece contactar con un asesor.
-11. OBJETIVO FINAL: Entregar una experiencia acogedora y personalizada que motive a los clientes a reservar una cita o resolver sus consultas rápida y eficientemente.
+COMBOS RELAX:
+- Masaje Relajante + Facial Básico: 60
+- Masaje Relajante + Exfoliación: 55
+- Facial Profundo + Terapia Facial: 100
+- Limpieza Básica + Piedras Calientes: 75
+
+COMBOS PARA DOLOR:
+- Descontracturante + Terapia del Dolor: 70
+- Terapéutico + Punción Seca: 95
+- Reflexología + Punción Seca: 70
+- Terapia Física + Auriculoterapia: 60
+
+COMBOS PREMIUM:
+- Piedras Calientes + Facial Profundo: 95
+- Terapéutico + Exfoliación + Reflexología: 150
+- Esferas Chinas + Terapia Facial: 80
+- Descontracturante + Facial Profundo + Auriculoterapia: 140
+
+PAQUETE AMOR (PROMOCIÓN NAVIDAD):
+Esta promo se activa solo cada diciembre del 1 al 23.
+- Precio promo diciembre hasta 23: 120
+- Precio regular fuera de ese periodo: 150
+Incluye: masaje a elección, piedras calientes, reflexología, exfoliación, limpieza facial, aromaterapia, musicoterapia, copa de vino, frutas, alfajor, decoración romántica.
+Ideal para parejas.
+La IA debe mostrar el precio correcto según fecha actual.
+
+RECOMENDACIONES INTELIGENTES
+
+El bot debe responder según necesidad:
+- Dolor fuerte → Terapéutico, Punción seca, Terapia del dolor, Neural
+- Estrés → Relajante, Piedras, Esferas
+- Tensión muscular → Descontracturante, Terapia Física
+- Piel → Faciales
+- Relajación profunda → Reflexología, Auriculoterapia, Exfoliación
+
+FLUJO DE CONVERSACIÓN
+
+1. Saluda una sola vez SOLO si "Ya se saludó antes" es false. Si ya se saludó, omite el saludo completamente.
+2. Pregunta necesidad con diagnóstico rápido:
+   - "¿Tienes dolor o deseas relajación?"
+   - "¿Qué zona del cuerpo duele o deseas tratar?"
+   - "¿Intenso o suave?"
+3. Recomienda servicio o combo ideal
+4. Pide fecha y hora de preferencia
+5. Ofrece separar con depósito calculado automáticamente
+6. Confirma reserva con alegría
+
+OBJECIONES
+
+"Es caro" → Ofrecer combos y si es diciembre ofrecer promociones
+"Estoy dudando" → Generar urgencia suave
+"No quiero depósito" → Explicar que asegura el espacio y se descuenta
+"Quiero para dos" → Sugerir Paquete Amor según fecha
+"Quiero hablar con alguien" → Responder exactamente:
+"Claro, te comunico con un asesor humano en un momento"
+y el bot deja de hablar, no agrega nada más.
 
 CONTEXTO DE LA CONVERSACIÓN:
-- Estado actual: ${contextoUsuario.estado || "menu"}
+- Estado actual: ${contextoUsuario.estado || "conversacion"}
 - Nombre del usuario: ${contextoUsuario.nombre || "Usuario"}
 - Tipo de consulta: ${contextoUsuario.tipoConsulta || "general"}
-- Puedes usar esta información para personalizar tu respuesta
+- Fecha actual: ${new Date().toLocaleDateString("es-PE", {
+      timeZone: "America/Lima",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    })}
+- Ya se saludó antes: ${contextoUsuario.yaSaludo || false}
 
-IMPORTANTE: Responde de forma natural, como si fueras un asistente real del spa. Sé empático, profesional y siempre busca ayudar al cliente. Recuerda que muchos clientes vienen de anuncios en redes sociales, así que sé acogedor y profesional desde el primer contacto.`;
+REGLA CRÍTICA SOBRE SALUDOS:
+- Si "Ya se saludó antes" es true, NO debes saludar de nuevo. NO uses "Hola", "Buenos días", "Buenas tardes", ni ningún saludo.
+- Si "Ya se saludó antes" es false, puedes saludar solo una vez.
+- NUNCA repitas saludos en la misma conversación.
+
+REGLA ANTI ALUCINACIÓN:
+Si la IA no sabe algo responde:
+"No tengo esa información exacta disponible, pero puedo consultar con un asesor humano si deseas."
+
+Meta final del bot: resolver dudas, recomendar, cerrar reserva.`;
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini", // Modelo económico y rápido
@@ -1196,9 +1262,9 @@ function limpiarArchivosBloqueados() {
     const singletonCookie = path.join(tokensDir, "SingletonCookie");
     const singletonSocket = path.join(tokensDir, "SingletonSocket");
 
-    // Intentar eliminar archivos que pueden estar bloqueados
+    // Solo eliminar archivos de lock, NO archivos de sesión importantes
+    // Preferences puede contener datos de sesión, así que solo lo renombramos si está bloqueado
     const archivosBloqueados = [
-      preferencesPath,
       lockPath,
       singletonPath,
       singletonCookie,
@@ -1297,30 +1363,53 @@ const tokensPath = path.join(__dirname, "tokens", "essenza-bot");
 const defaultPath = path.join(tokensPath, "Default");
 const preferencesPath = path.join(defaultPath, "Preferences");
 
-// Si Preferences existe y no se pudo limpiar, usar un directorio temporal
+// Verificar si hay una sesión guardada válida antes de renombrar
+// Solo renombrar si Preferences está bloqueado Y no hay archivos de sesión importantes
 if (!archivosLimpiados && fs.existsSync(preferencesPath)) {
-  // Intentar renombrar la carpeta Default
-  try {
-    const timestamp = Date.now();
-    const backupPath = path.join(tokensPath, `Default.backup.${timestamp}`);
-    if (fs.existsSync(defaultPath)) {
-      fs.renameSync(defaultPath, backupPath);
-      logMessage(
-        "SUCCESS",
-        `Carpeta Default renombrada. El bot creara una nueva.`
-      );
+  // Verificar si hay archivos de sesión importantes (como Local Storage)
+  const sessionFiles = [
+    path.join(defaultPath, "Local Storage"),
+    path.join(defaultPath, "Session Storage"),
+    path.join(defaultPath, "IndexedDB"),
+  ];
+
+  const hasSessionData = sessionFiles.some((file) => {
+    try {
+      return fs.existsSync(file) && fs.statSync(file).isDirectory();
+    } catch {
+      return false;
     }
-  } catch (renameError) {
-    // Si no se puede renombrar, usar un nombre de sesión temporal
-    logMessage(
-      "WARNING",
-      "No se pudo renombrar carpeta Default. Usando sesion temporal.",
-      {
-        error: renameError.message,
+  });
+
+  if (!hasSessionData) {
+    // Solo renombrar si no hay datos de sesión importantes
+    try {
+      const timestamp = Date.now();
+      const backupPath = path.join(tokensPath, `Default.backup.${timestamp}`);
+      if (fs.existsSync(defaultPath)) {
+        fs.renameSync(defaultPath, backupPath);
+        logMessage(
+          "SUCCESS",
+          `Carpeta Default renombrada (sin datos de sesión). El bot creara una nueva.`
+        );
       }
+    } catch (renameError) {
+      // Si no se puede renombrar, usar un nombre de sesión temporal
+      logMessage(
+        "WARNING",
+        "No se pudo renombrar carpeta Default. Usando sesion temporal.",
+        {
+          error: renameError.message,
+        }
+      );
+      sessionName = `essenza-bot-${Date.now()}`;
+      logMessage("INFO", `Usando nombre de sesion temporal: ${sessionName}`);
+    }
+  } else {
+    logMessage(
+      "INFO",
+      "Sesión guardada encontrada. Manteniendo carpeta Default para preservar la sesión."
     );
-    sessionName = `essenza-bot-${Date.now()}`;
-    logMessage("INFO", `Usando nombre de sesion temporal: ${sessionName}`);
   }
 }
 
@@ -1333,6 +1422,8 @@ function iniciarBot() {
   wppconnect
     .create({
       session: sessionName,
+      autoClose: false, // Mantener la sesión abierta
+      disableWelcome: true, // Deshabilitar mensaje de bienvenida
       catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
         console.clear();
         console.log("\n" + "=".repeat(60));
@@ -1488,6 +1579,19 @@ function iniciarBot() {
       },
       statusFind: (statusSession, session) => {
         logMessage("INFO", `Estado de sesión: ${statusSession}`, { session });
+        if (statusSession === "isLogged") {
+          logMessage(
+            "SUCCESS",
+            "✅ Sesión iniciada correctamente - No necesitas escanear QR"
+          );
+        } else if (statusSession === "notLogged") {
+          logMessage(
+            "WARNING",
+            "⚠️ Sesión no encontrada - Necesitas escanear el QR"
+          );
+        } else if (statusSession === "qrReadSuccess") {
+          logMessage("SUCCESS", "✅ QR escaneado exitosamente");
+        }
       },
       headless: true,
       browserArgs: [
@@ -1634,6 +1738,8 @@ function start(client) {
         wppconnect
           .create({
             session: sessionName,
+            autoClose: false, // Mantener la sesión abierta
+            disableWelcome: true, // Deshabilitar mensaje de bienvenida
             catchQR: () => {},
             headless: true,
             browserArgs: [
@@ -1761,6 +1867,28 @@ function start(client) {
 
       // 10. Validación final del userId
       const userId = message.from;
+
+      // ============================================
+      // VALIDACIÓN TEMPORAL PARA PRUEBAS
+      // TODO: QUITAR ESTA VALIDACIÓN DESPUÉS DE PRUEBAS
+      // ============================================
+      if (MODO_PRUEBA) {
+        const numeroUsuario = extraerNumero(userId);
+        if (numeroUsuario !== NUMERO_PRUEBA && userId !== ADMIN_NUMBER) {
+          logMessage(
+            "INFO",
+            `Mensaje ignorado en modo prueba - Número: ${numeroUsuario}`,
+            {
+              userId: userId,
+              numero: numeroUsuario,
+              esperado: NUMERO_PRUEBA,
+            }
+          );
+          return; // Ignorar mensajes de otros números durante pruebas
+        }
+      }
+      // ============================================
+
       // Aceptar tanto @c.us como @lid (dispositivo vinculado)
       const esUserIdValido =
         userId &&
@@ -1805,27 +1933,319 @@ function start(client) {
       });
 
       // ============================================
-      // COMANDO ADMINISTRADOR: ESTADÍSTICAS
+      // COMANDOS DEL ADMINISTRADOR
       // ============================================
-      if (
-        userId === ADMIN_NUMBER &&
-        (textLower === "estadisticas" ||
+      if (userId === ADMIN_NUMBER) {
+        // Comando: Estadísticas
+        if (
+          textLower === "estadisticas" ||
           textLower === "stats" ||
-          textLower === "estadísticas")
-      ) {
-        try {
-          await enviarMensajeSeguro(
-            client,
-            ADMIN_NUMBER,
-            obtenerEstadisticas()
-          );
-          logMessage("INFO", "Estadísticas enviadas al administrador");
-        } catch (error) {
-          logMessage("ERROR", "Error al enviar estadísticas", {
-            error: error.message,
-          });
+          textLower === "estadísticas"
+        ) {
+          try {
+            await enviarMensajeSeguro(
+              client,
+              ADMIN_NUMBER,
+              obtenerEstadisticas()
+            );
+            logMessage("INFO", "Estadísticas enviadas al administrador");
+          } catch (error) {
+            logMessage("ERROR", "Error al enviar estadísticas", {
+              error: error.message,
+            });
+          }
+          return;
         }
-        return;
+
+        // Comando: Desactivar IA
+        if (
+          fuzzyMatch(textLower, "desactivar ia") ||
+          fuzzyMatch(textLower, "desactivar inteligencia artificial") ||
+          textLower === "desactivar ia" ||
+          textLower === "ia off" ||
+          textLower === "desactivar ai"
+        ) {
+          iaGlobalDesactivada = true;
+          try {
+            await enviarMensajeSeguro(
+              client,
+              ADMIN_NUMBER,
+              "✅ *IA Desactivada*\n\nLa inteligencia artificial ha sido desactivada globalmente.\n\nEl bot seguirá funcionando pero sin respuestas de IA.\n\nPara reactivarla, escribe: *Activar IA*"
+            );
+            logMessage(
+              "INFO",
+              "IA desactivada globalmente por el administrador"
+            );
+          } catch (error) {
+            logMessage("ERROR", "Error al desactivar IA", {
+              error: error.message,
+            });
+          }
+          return;
+        }
+
+        // Comando: Activar IA
+        if (
+          fuzzyMatch(textLower, "activar ia") ||
+          fuzzyMatch(textLower, "activar inteligencia artificial") ||
+          textLower === "activar ia" ||
+          textLower === "ia on" ||
+          textLower === "activar ai"
+        ) {
+          iaGlobalDesactivada = false;
+          try {
+            await enviarMensajeSeguro(
+              client,
+              ADMIN_NUMBER,
+              "✅ *IA Activada*\n\nLa inteligencia artificial ha sido reactivada globalmente.\n\nEl bot ahora puede usar IA para responder a los usuarios."
+            );
+            logMessage(
+              "INFO",
+              "IA reactivada globalmente por el administrador"
+            );
+          } catch (error) {
+            logMessage("ERROR", "Error al activar IA", {
+              error: error.message,
+            });
+          }
+          return;
+        }
+
+        // Comando: Estado de IA
+        if (
+          fuzzyMatch(textLower, "estado ia") ||
+          fuzzyMatch(textLower, "estado de la ia") ||
+          textLower === "estado ia" ||
+          textLower === "ia estado"
+        ) {
+          const estadoIA = iaGlobalDesactivada
+            ? "❌ Desactivada"
+            : "✅ Activada";
+          try {
+            await enviarMensajeSeguro(
+              client,
+              ADMIN_NUMBER,
+              `📊 *Estado de la IA*\n\n${estadoIA}\n\nPara cambiar el estado:\n• *Desactivar IA* - Desactiva la IA globalmente\n• *Activar IA* - Reactiva la IA globalmente`
+            );
+            logMessage("INFO", "Estado de IA consultado por el administrador");
+          } catch (error) {
+            logMessage("ERROR", "Error al consultar estado de IA", {
+              error: error.message,
+            });
+          }
+          return;
+        }
+
+        // Comando: Desactivar bot para un usuario específico
+        // Formato: "desactivar bot [número]" o "desactivar bot" (muestra lista)
+        if (
+          fuzzyMatch(textLower, "desactivar bot") ||
+          textLower === "desactivar bot" ||
+          textLower === "bot off" ||
+          fuzzyMatch(textLower, "modo manual")
+        ) {
+          // Intentar extraer número del mensaje
+          const numeroMatch = text.match(/(\d{9,12})/);
+
+          if (numeroMatch) {
+            // Si hay un número en el mensaje, desactivar para ese usuario
+            const numeroBuscado = numeroMatch[1];
+            let usuarioEncontrado = null;
+
+            // Buscar el usuario por número
+            for (const [uid, nombre] of Object.entries(userNames)) {
+              const numeroUsuario = extraerNumero(uid);
+              if (
+                numeroUsuario === numeroBuscado ||
+                numeroUsuario.includes(numeroBuscado)
+              ) {
+                usuarioEncontrado = uid;
+                break;
+              }
+            }
+
+            if (usuarioEncontrado) {
+              usuariosBotDesactivado.add(usuarioEncontrado);
+              humanModeUsers.add(usuarioEncontrado); // También agregar a modo asesor
+              if (!userData[usuarioEncontrado])
+                userData[usuarioEncontrado] = {};
+              userData[usuarioEncontrado].iaDesactivada = true;
+              userData[usuarioEncontrado].botDesactivadoPorAdmin = true;
+
+              try {
+                await enviarMensajeSeguro(
+                  client,
+                  ADMIN_NUMBER,
+                  `✅ *Bot Desactivado*\n\nBot y IA desactivados para:\n👤 ${
+                    userNames[usuarioEncontrado] || "Usuario"
+                  }\n📱 ${extraerNumero(
+                    usuarioEncontrado
+                  )}\n\nSolo tú puedes responder ahora.\n\nPara reactivarlo, escribe: *Activar bot ${numeroBuscado}*`
+                );
+                logMessage(
+                  "INFO",
+                  `Bot desactivado para usuario ${
+                    userNames[usuarioEncontrado]
+                  } (${extraerNumero(usuarioEncontrado)}) por el administrador`
+                );
+              } catch (error) {
+                logMessage("ERROR", "Error al desactivar bot", {
+                  error: error.message,
+                });
+              }
+            } else {
+              try {
+                await enviarMensajeSeguro(
+                  client,
+                  ADMIN_NUMBER,
+                  `❌ *Usuario no encontrado*\n\nNo se encontró un usuario con el número: ${numeroBuscado}\n\nUsuarios en modo asesor:\n${
+                    Array.from(humanModeUsers)
+                      .map(
+                        (uid, idx) =>
+                          `${idx + 1}. ${
+                            userNames[uid] || "Usuario"
+                          } (${extraerNumero(uid)})`
+                      )
+                      .join("\n") || "Ninguno"
+                  }`
+                );
+              } catch (error) {
+                logMessage("ERROR", "Error al buscar usuario", {
+                  error: error.message,
+                });
+              }
+            }
+          } else {
+            // Si no hay número, mostrar lista de usuarios en modo asesor
+            const usuariosEnAsesor = Array.from(humanModeUsers);
+            if (usuariosEnAsesor.length > 0) {
+              const listaUsuarios = usuariosEnAsesor
+                .map((uid, idx) => {
+                  const nombre = userNames[uid] || "Usuario";
+                  const numero = extraerNumero(uid);
+                  const estado = usuariosBotDesactivado.has(uid)
+                    ? "🔴 Bot desactivado"
+                    : "🟢 Bot activo";
+                  return `${idx + 1}. ${nombre} (${numero}) - ${estado}`;
+                })
+                .join("\n");
+
+              try {
+                await enviarMensajeSeguro(
+                  client,
+                  ADMIN_NUMBER,
+                  `📋 *Usuarios en modo asesor*\n\n${listaUsuarios}\n\nPara desactivar el bot para un usuario, escribe:\n*Desactivar bot [número]*\n\nEjemplo: *Desactivar bot 972002363*`
+                );
+              } catch (error) {
+                logMessage("ERROR", "Error al mostrar lista de usuarios", {
+                  error: error.message,
+                });
+              }
+            } else {
+              try {
+                await enviarMensajeSeguro(
+                  client,
+                  ADMIN_NUMBER,
+                  `ℹ️ *No hay usuarios en modo asesor*\n\nPara desactivar el bot para un usuario específico, escribe:\n*Desactivar bot [número]*\n\nEjemplo: *Desactivar bot 972002363*`
+                );
+              } catch (error) {
+                logMessage("ERROR", "Error al mostrar mensaje", {
+                  error: error.message,
+                });
+              }
+            }
+          }
+          return;
+        }
+
+        // Comando: Activar bot para un usuario específico
+        if (
+          fuzzyMatch(textLower, "activar bot") ||
+          textLower === "activar bot" ||
+          textLower === "bot on" ||
+          fuzzyMatch(textLower, "reactivar bot")
+        ) {
+          // Intentar extraer número del mensaje
+          const numeroMatch = text.match(/(\d{9,12})/);
+
+          if (numeroMatch) {
+            const numeroBuscado = numeroMatch[1];
+            let usuarioEncontrado = null;
+
+            // Buscar el usuario por número
+            for (const [uid, nombre] of Object.entries(userNames)) {
+              const numeroUsuario = extraerNumero(uid);
+              if (
+                numeroUsuario === numeroBuscado ||
+                numeroUsuario.includes(numeroBuscado)
+              ) {
+                usuarioEncontrado = uid;
+                break;
+              }
+            }
+
+            if (usuarioEncontrado) {
+              usuariosBotDesactivado.delete(usuarioEncontrado);
+              // Solo remover de humanModeUsers si fue agregado por el comando del admin
+              // (no remover si está en modo asesor por otra razón)
+              if (userData[usuarioEncontrado]?.botDesactivadoPorAdmin) {
+                humanModeUsers.delete(usuarioEncontrado);
+              }
+              if (userData[usuarioEncontrado]) {
+                userData[usuarioEncontrado].botDesactivadoPorAdmin = false;
+                // Reactivar IA si fue desactivada solo por el comando del admin
+                userData[usuarioEncontrado].iaDesactivada = false;
+              }
+
+              try {
+                await enviarMensajeSeguro(
+                  client,
+                  ADMIN_NUMBER,
+                  `✅ *Bot Reactivado*\n\nBot y IA reactivados para:\n👤 ${
+                    userNames[usuarioEncontrado] || "Usuario"
+                  }\n📱 ${extraerNumero(
+                    usuarioEncontrado
+                  )}\n\nEl bot ahora puede responder automáticamente.`
+                );
+                logMessage(
+                  "INFO",
+                  `Bot reactivado para usuario ${
+                    userNames[usuarioEncontrado]
+                  } (${extraerNumero(usuarioEncontrado)}) por el administrador`
+                );
+              } catch (error) {
+                logMessage("ERROR", "Error al reactivar bot", {
+                  error: error.message,
+                });
+              }
+            } else {
+              try {
+                await enviarMensajeSeguro(
+                  client,
+                  ADMIN_NUMBER,
+                  `❌ *Usuario no encontrado*\n\nNo se encontró un usuario con el número: ${numeroBuscado}`
+                );
+              } catch (error) {
+                logMessage("ERROR", "Error al buscar usuario", {
+                  error: error.message,
+                });
+              }
+            }
+          } else {
+            try {
+              await enviarMensajeSeguro(
+                client,
+                ADMIN_NUMBER,
+                `ℹ️ *Activar Bot*\n\nPara reactivar el bot para un usuario específico, escribe:\n*Activar bot [número]*\n\nEjemplo: *Activar bot 972002363*`
+              );
+            } catch (error) {
+              logMessage("ERROR", "Error al mostrar mensaje", {
+                error: error.message,
+              });
+            }
+          }
+          return;
+        }
       }
 
       // ============================================
@@ -1838,7 +2258,12 @@ function start(client) {
         const esComando =
           textLower === "estadisticas" ||
           textLower === "stats" ||
-          textLower === "estadísticas";
+          textLower === "estadísticas" ||
+          fuzzyMatch(textLower, "desactivar ia") ||
+          fuzzyMatch(textLower, "activar ia") ||
+          fuzzyMatch(textLower, "estado ia") ||
+          fuzzyMatch(textLower, "desactivar bot") ||
+          fuzzyMatch(textLower, "activar bot");
 
         if (!esComando) {
           try {
@@ -1871,136 +2296,318 @@ function start(client) {
       }
 
       // ============================================
-      // DETECCIÓN DE SALUDOS
+      // DETECCIÓN DE SALUDOS (con control de tiempo desde última interacción)
       // ============================================
       const saludo = detectSaludo(textLower);
+      const ahora = new Date();
+      const ultimaInteraccion = userData[userId]?.ultimaInteraccion
+        ? new Date(userData[userId].ultimaInteraccion)
+        : null;
+
+      // Tiempo mínimo entre saludos: 1 hora (3600000 ms)
+      const tiempoMinimoEntreSaludos = 60 * 60 * 1000; // 1 hora
+      const tiempoDesdeUltimaInteraccion = ultimaInteraccion
+        ? ahora - ultimaInteraccion
+        : Infinity; // Si no hay última interacción, es infinito (primera vez)
+
+      // Actualizar última interacción
+      if (!userData[userId]) userData[userId] = {};
+      userData[userId].ultimaInteraccion = ahora.toISOString();
+
       if (saludo) {
-        // Si es "hola", también establecer estado de menú para facilitar navegación
+        // Si es "hola" y ha pasado suficiente tiempo O es la primera vez
         if (saludo === "hola") {
-          if (!userState[userId]) {
-            userState[userId] = "menu";
-          }
-        }
+          const puedeSaludar =
+            !userData[userId]?.saludoEnviado ||
+            tiempoDesdeUltimaInteraccion >= tiempoMinimoEntreSaludos;
 
-        const saludoHora = getSaludoPorHora();
-        let respuesta = "";
+          if (puedeSaludar) {
+            // Marcar que ya se envió un saludo
+            userData[userId].saludoEnviado = true;
+            userData[userId].bienvenidaEnviada = true;
 
-        if (saludo === "hola") {
-          // Usar IA para responder el saludo de forma natural
-          const contextoSaludo = {
-            estado: "inicio",
-            nombre: userName,
-            tipoConsulta: "saludo",
-          };
-          const respuestaIA = await consultarIA(
-            `Hola, soy ${userName}`,
-            contextoSaludo
-          );
-          if (respuestaIA) {
-            respuesta = respuestaIA;
+            // Establecer estado
+            if (!userState[userId]) {
+              userState[userId] = "conversacion";
+            }
+
+            const saludoHora = getSaludoPorHora();
+            let respuesta = "";
+
+            // Usar IA para responder el saludo de forma natural
+            const contextoSaludo = {
+              estado: "inicio",
+              nombre: userName,
+              tipoConsulta: "saludo",
+            };
+            const respuestaIA = await consultarIA(
+              `Hola, soy ${userName}`,
+              contextoSaludo
+            );
+            if (respuestaIA) {
+              respuesta = respuestaIA;
+            } else {
+              respuesta = `${saludoHora}! 👋\n\n¡Hola ${userName}! Bienvenido a *Essenza Spa*.\n\nSomos especialistas en bienestar y belleza. 💆‍♀️✨\n\n¿En qué puedo ayudarte hoy? 😊`;
+            }
+
+            try {
+              await enviarMensajeSeguro(client, userId, respuesta);
+              logMessage("SUCCESS", `Saludo respondido a ${userName}`, {
+                tipo: saludo,
+                tiempoDesdeUltima:
+                  Math.round(tiempoDesdeUltimaInteraccion / 1000 / 60) +
+                  " minutos",
+              });
+            } catch (error) {
+              logMessage("ERROR", "Error al responder saludo", {
+                error: error.message,
+              });
+            }
+            return;
           } else {
-            respuesta = `${saludoHora}! 👋\n\n¡Hola ${userName}! Bienvenido a *Essenza Spa*.\n\nSomos especialistas en bienestar y belleza. 💆‍♀️✨\n\n¿En qué puedo ayudarte hoy? 😊`;
+            // Si ya se saludó recientemente, no repetir saludo pero continuar con el flujo normal
+            logMessage(
+              "INFO",
+              `Usuario ${userName} escribió "hola" pero ya fue saludado recientemente`,
+              {
+                tiempoDesdeUltima:
+                  Math.round(tiempoDesdeUltimaInteraccion / 1000 / 60) +
+                  " minutos",
+              }
+            );
+            // No hacer return, dejar que continúe con el flujo normal (la IA puede responder)
           }
         } else if (saludo === "gracias") {
-          respuesta = getRespuestaVariada("gracias");
-        } else if (saludo === "adios") {
-          respuesta = getRespuestaVariada("adios");
-        } else {
-          respuesta = `${getSaludoPorHora()}! ${getRespuestaVariada(saludo)}`;
-        }
-
-        try {
+          const respuesta = getRespuestaVariada("gracias");
           await enviarMensajeSeguro(client, userId, respuesta);
-          logMessage("SUCCESS", `Saludo respondido a ${userName}`, {
-            tipo: saludo,
-          });
-        } catch (error) {
-          logMessage("ERROR", "Error al responder saludo", {
-            error: error.message,
-          });
+          return;
+        } else if (saludo === "adios") {
+          const respuesta = getRespuestaVariada("adios");
+          await enviarMensajeSeguro(client, userId, respuesta);
+          return;
+        } else {
+          // Otros saludos (buenos días, buenas tardes, etc.)
+          const puedeSaludar =
+            !userData[userId]?.saludoEnviado ||
+            tiempoDesdeUltimaInteraccion >= tiempoMinimoEntreSaludos;
+
+          if (puedeSaludar) {
+            userData[userId].saludoEnviado = true;
+            const saludoHora = getSaludoPorHora();
+            const respuesta = `${getSaludoPorHora()}! ${getRespuestaVariada(
+              saludo
+            )}`;
+            await enviarMensajeSeguro(client, userId, respuesta);
+            logMessage("SUCCESS", `Saludo respondido a ${userName}`, {
+              tipo: saludo,
+            });
+            return;
+          } else {
+            // No repetir saludo si fue reciente
+            return;
+          }
         }
-        return;
       }
 
       // ============================================
-      // SI ESTÁ EN MODO RESERVA, verificar cancelación PRIMERO
+      // SI ESTÁ EN MODO RESERVA, verificar cancelación y tiempo PRIMERO
       // (antes de la verificación general de humanModeUsers)
       // ============================================
       if (userState[userId] === "reserva") {
-        // Permitir salir del modo reserva
+        // Verificar si ha pasado suficiente tiempo desde que se activó el modo reserva
+        const modoReservaDesde = userData[userId]?.modoReservaDesde
+          ? new Date(userData[userId].modoReservaDesde)
+          : null;
+        const ahora = new Date();
+        const tiempoMinimoDesactivacion = 24 * 60 * 60 * 1000; // 24 horas (1 día) en milisegundos
+        const tiempoTranscurrido = modoReservaDesde
+          ? ahora - modoReservaDesde
+          : Infinity;
+
+        // Si ha pasado el tiempo mínimo (1 día), reactivar automáticamente la IA
         if (
-          fuzzyMatch(textLower, "cancelar") ||
-          fuzzyMatch(textLower, "volver") ||
-          fuzzyMatch(textLower, "no quiero reservar")
+          modoReservaDesde &&
+          tiempoTranscurrido >= tiempoMinimoDesactivacion
         ) {
           userState[userId] = null;
           humanModeUsers.delete(userId);
+          if (userData[userId]) {
+            userData[userId].iaDesactivada = false;
+            delete userData[userId].modoReservaDesde;
+          }
           logMessage(
             "INFO",
-            `Usuario ${userName} canceló el proceso de reserva`
+            `Modo reserva expirado para ${userName} - IA reactivada automáticamente después de ${Math.round(
+              tiempoTranscurrido / 1000 / 60 / 60
+            )} horas`
           );
-          try {
-            await enviarMensajeSeguro(
-              client,
-              userId,
-              "✅ Entendido, he cancelado tu solicitud de reserva. ¿En qué más puedo ayudarte? 😊"
+          // No hacer return, dejar que continúe para que la IA pueda responder
+        } else {
+          // Permitir salir del modo reserva manualmente
+          if (
+            fuzzyMatch(textLower, "cancelar") ||
+            fuzzyMatch(textLower, "volver") ||
+            fuzzyMatch(textLower, "no quiero reservar")
+          ) {
+            userState[userId] = null;
+            humanModeUsers.delete(userId);
+            if (userData[userId]) {
+              userData[userId].iaDesactivada = false;
+              delete userData[userId].modoReservaDesde;
+            }
+            logMessage(
+              "INFO",
+              `Usuario ${userName} canceló el proceso de reserva`
             );
-          } catch (error) {
-            logMessage("ERROR", `Error al cancelar reserva`, {
-              error: error.message,
-            });
+            try {
+              await enviarMensajeSeguro(
+                client,
+                userId,
+                "✅ Entendido, he cancelado tu solicitud de reserva. ¿En qué más puedo ayudarte? 😊"
+              );
+            } catch (error) {
+              logMessage("ERROR", `Error al cancelar reserva`, {
+                error: error.message,
+              });
+            }
+            return;
           }
+          // Si está en modo reserva y no ha pasado el tiempo, no procesar más (el asesor maneja)
+          const tiempoRestante = modoReservaDesde
+            ? Math.round(
+                (tiempoMinimoDesactivacion - tiempoTranscurrido) /
+                  1000 /
+                  60 /
+                  60
+              )
+            : 24;
+          logMessage(
+            "INFO",
+            `Usuario ${userName} está en modo reserva - IA desactivada (${tiempoRestante} horas restantes)`
+          );
           return;
         }
-        // Si está en modo reserva, no procesar más (el asesor maneja)
-        return;
       }
 
       // ============================================
       // SALIDA DEL MODO ASESOR (solo si está activo y NO en reserva)
       // ============================================
       if (humanModeUsers.has(userId)) {
-        // Si el usuario quiere volver a hablar con la IA
+        // Verificar si ha pasado suficiente tiempo desde que se activó el modo asesor
+        const modoAsesorDesde = userData[userId]?.modoAsesorDesde
+          ? new Date(userData[userId].modoAsesorDesde)
+          : null;
+        const ahora = new Date();
+        const tiempoMinimoDesactivacion = 3 * 60 * 60 * 1000; // 3 horas en milisegundos
+        const tiempoTranscurrido = modoAsesorDesde
+          ? ahora - modoAsesorDesde
+          : Infinity;
+
+        // Si ha pasado el tiempo mínimo, reactivar automáticamente la IA
         if (
-          fuzzyMatch(textLower, "bot") ||
-          textLower === "bot" ||
-          fuzzyMatch(textLower, "ia") ||
-          fuzzyMatch(textLower, "inteligencia artificial")
+          modoAsesorDesde &&
+          tiempoTranscurrido >= tiempoMinimoDesactivacion
         ) {
           humanModeUsers.delete(userId);
-          userState[userId] = null; // Limpiar estado
-          try {
-            await enviarMensajeSeguro(
-              client,
-              userId,
-              "✅ Perfecto, estoy de vuelta para ayudarte. ¿En qué puedo asistirte? 😊"
-            );
-            logMessage("SUCCESS", `Usuario ${userName} salió del modo asesor`);
-          } catch (error) {
-            logMessage("ERROR", `Error al confirmar salida del modo asesor`, {
-              error: error.message,
-            });
+          if (userData[userId]) {
+            userData[userId].iaDesactivada = false;
+            delete userData[userId].modoAsesorDesde;
           }
+          userState[userId] = null; // Limpiar estado
+          logMessage(
+            "INFO",
+            `Modo asesor expirado para ${userName} - IA reactivada automáticamente después de ${Math.round(
+              tiempoTranscurrido / 1000 / 60 / 60
+            )} horas`
+          );
+          // No hacer return, dejar que continúe para que la IA pueda responder
+        } else {
+          // Si el usuario quiere volver a hablar con la IA manualmente
+          if (
+            fuzzyMatch(textLower, "bot") ||
+            textLower === "bot" ||
+            fuzzyMatch(textLower, "ia") ||
+            fuzzyMatch(textLower, "inteligencia artificial")
+          ) {
+            humanModeUsers.delete(userId);
+            if (userData[userId]) {
+              userData[userId].iaDesactivada = false;
+              delete userData[userId].modoAsesorDesde;
+            }
+            userState[userId] = null; // Limpiar estado
+            try {
+              await enviarMensajeSeguro(
+                client,
+                userId,
+                "✅ Perfecto, estoy de vuelta para ayudarte. ¿En qué puedo asistirte? 😊"
+              );
+              logMessage(
+                "SUCCESS",
+                `Usuario ${userName} salió del modo asesor manualmente`
+              );
+            } catch (error) {
+              logMessage("ERROR", `Error al confirmar salida del modo asesor`, {
+                error: error.message,
+              });
+            }
+            return;
+          }
+          // Si está en modo asesor y no ha pasado el tiempo, no procesar más (el asesor humano maneja)
+          logMessage(
+            "INFO",
+            `Usuario ${userName} está en modo asesor - IA desactivada (${Math.round(
+              (tiempoMinimoDesactivacion - tiempoTranscurrido) / 1000 / 60
+            )} minutos restantes)`
+          );
           return;
         }
-        // Si está en modo asesor, no procesar más (el asesor humano maneja)
-        return;
       }
 
       // ============================================
-      // COMANDO: ASESOR
+      // DETECCIÓN: SOLICITUD DE ASESOR HUMANO
       // ============================================
-      if (fuzzyMatch(textLower, "asesor")) {
+      const palabrasAsesor = [
+        "asesor",
+        "asesor humano",
+        "hablar con alguien",
+        "quiero hablar con un agente",
+        "quiero hablar con un representante",
+        "representante",
+        "agente",
+        "humano",
+        "persona",
+        "hablar con una persona",
+        "hablar con un humano",
+        "quiero hablar con alguien",
+        "necesito hablar con alguien",
+        "atencion humana",
+        "atención humana",
+        "atencion personal",
+        "atención personal",
+      ];
+
+      if (palabrasAsesor.some((palabra) => textLower.includes(palabra))) {
         humanModeUsers.add(userId);
         estadisticas.asesoresActivados++;
-        logMessage("INFO", `Usuario ${userName} activó modo asesor`);
+        userState[userId] = "asesor";
+
+        // Guardar timestamp de cuando se activó el modo asesor
+        if (!userData[userId]) userData[userId] = {};
+        userData[userId].modoAsesorDesde = new Date().toISOString();
+        userData[userId].iaDesactivada = true; // Marcar que la IA está desactivada
+
+        logMessage(
+          "INFO",
+          `Usuario ${userName} solicitó hablar con asesor humano - IA desactivada por 3 horas`
+        );
 
         // Enviar mensaje al usuario PRIMERO (más importante)
         try {
           await enviarMensajeSeguro(
             client,
             userId,
-            "Por supuesto, estoy transfiriendo tu consulta a uno de nuestros representantes. Por favor espera un momento. 😊"
+            "Por supuesto, estoy transfiriendo tu consulta a uno de nuestros representantes. Por favor espera un momento. 😊\n\n" +
+              "Un asesor se pondrá en contacto contigo pronto."
           );
           logMessage(
             "SUCCESS",
@@ -2021,9 +2628,14 @@ function start(client) {
           await enviarMensajeSeguro(
             client,
             ADMIN_NUMBER,
-            `🔔 *Nueva solicitud de asesor*\n\nUsuario: ${userName}\nNúmero: ${extraerNumero(
-              userId
-            )}\n\nEl bot dejará de responder a este usuario.`
+            `🔔 *NUEVA SOLICITUD DE ASESOR*\n\n` +
+              `👤 *Usuario:* ${userName}\n` +
+              `📱 *Número:* ${extraerNumero(userId)}\n` +
+              `💬 *Mensaje:* "${text.substring(0, 100)}${
+                text.length > 100 ? "..." : ""
+              }"\n\n` +
+              `⚠️ El bot dejará de responder automáticamente a este usuario.\n` +
+              `✅ Puedes atenderlo directamente desde aquí.`
           );
           logMessage(
             "SUCCESS",
@@ -2041,6 +2653,15 @@ function start(client) {
           );
         }
         return;
+      }
+
+      // Verificar si el bot está desactivado para este usuario por el admin
+      if (usuariosBotDesactivado.has(userId)) {
+        logMessage(
+          "INFO",
+          `Usuario ${userName} tiene bot desactivado por admin - Bot no responde`
+        );
+        return; // El admin maneja este chat completamente
       }
 
       if (humanModeUsers.has(userId)) {
@@ -2062,7 +2683,16 @@ function start(client) {
         userState[userId] = "reserva";
         humanModeUsers.add(userId);
         estadisticas.reservasSolicitadas++;
-        logMessage("INFO", `Usuario ${userName} solicitó reserva`);
+
+        // Guardar timestamp de cuando se activó el modo reserva
+        if (!userData[userId]) userData[userId] = {};
+        userData[userId].modoReservaDesde = new Date().toISOString();
+        userData[userId].iaDesactivada = true; // Marcar que la IA está desactivada
+
+        logMessage(
+          "INFO",
+          `Usuario ${userName} solicitó reserva - IA desactivada por 24 horas`
+        );
 
         // Enviar mensaje al usuario PRIMERO (más importante)
         try {
@@ -2126,10 +2756,25 @@ function start(client) {
       }
 
       // Mensaje de bienvenida para nuevos usuarios (solo si no tiene estado y no se ha enviado bienvenida)
-      if (!userState[userId] && !userData[userId]?.bienvenidaEnviada) {
-        if (!userData[userId]) userData[userId] = {};
+      // NOTA: Esta sección solo se ejecuta si NO se detectó un saludo arriba
+      // y ha pasado suficiente tiempo desde la última interacción
+      const tiempoDesdeUltimaInteraccionBienvenida = ultimaInteraccion
+        ? ahora - ultimaInteraccion
+        : Infinity;
+      const tiempoMinimoParaBienvenida = 60 * 60 * 1000; // 1 hora
+
+      if (
+        !userState[userId] &&
+        !userData[userId]?.bienvenidaEnviada &&
+        !saludo &&
+        tiempoDesdeUltimaInteraccionBienvenida >= tiempoMinimoParaBienvenida
+      ) {
         userData[userId].bienvenidaEnviada = true;
-        logMessage("INFO", `Nuevo usuario detectado: ${userName}`);
+        userData[userId].saludoEnviado = true; // Marcar también saludo para evitar duplicados
+        logMessage(
+          "INFO",
+          `Nuevo usuario detectado o usuario que regresa después de tiempo: ${userName}`
+        );
 
         // Usar IA para la bienvenida
         const contextoBienvenida = {
@@ -2174,20 +2819,54 @@ function start(client) {
       });
 
       // Intentar usar IA primero (solo si no está en modo reserva o asesor)
-      if (userState[userId] !== "reserva" && !humanModeUsers.has(userId)) {
+      // También verificar que la IA no esté desactivada por tiempo o globalmente
+      const iaDesactivadaUsuario = userData[userId]?.iaDesactivada === true;
+      const estaEnReserva = userState[userId] === "reserva";
+      const estaEnAsesor = humanModeUsers.has(userId);
+      const puedeUsarIA =
+        !estaEnReserva &&
+        !estaEnAsesor &&
+        !iaDesactivadaUsuario &&
+        !iaGlobalDesactivada; // Verificar también desactivación global
+
+      if (puedeUsarIA) {
         const contextoUsuario = {
           estado: userState[userId] || "conversacion",
           nombre: userName,
+          yaSaludo: userData[userId]?.saludoEnviado || false,
         };
 
         const respuestaIA = await consultarIA(text, contextoUsuario);
 
         if (respuestaIA) {
+          // Si ya se saludó antes, limpiar saludos de la respuesta de la IA
+          let respuestaFinal = respuestaIA;
+          if (userData[userId]?.saludoEnviado) {
+            // Eliminar saludos comunes del inicio de la respuesta
+            respuestaFinal = respuestaIA
+              .replace(/^(Hola,?\s*[^.!?]*[.!?]\s*)/i, "")
+              .replace(/^(Buenos días,?\s*[^.!?]*[.!?]\s*)/i, "")
+              .replace(/^(Buenas tardes,?\s*[^.!?]*[.!?]\s*)/i, "")
+              .replace(/^(Buenas noches,?\s*[^.!?]*[.!?]\s*)/i, "")
+              .replace(/^(Hola\s+[^.!?]*[.!?]\s*)/i, "")
+              .trim();
+
+            // Si después de limpiar queda vacío o muy corto, usar la respuesta original
+            if (respuestaFinal.length < 10) {
+              respuestaFinal = respuestaIA;
+            }
+          }
+
           // Si la IA respondió, usar su respuesta
-          await enviarMensajeSeguro(client, userId, respuestaIA);
+          await enviarMensajeSeguro(client, userId, respuestaFinal);
           logMessage("SUCCESS", `Respuesta de IA enviada a ${userName}`);
           return; // Importante: hacer return para no continuar
         }
+      } else if (iaDesactivada) {
+        // Si la IA está desactivada, no responder nada (el asesor maneja)
+        const motivo = estaEnReserva ? "modo reserva" : "modo asesor";
+        logMessage("INFO", `IA desactivada para ${userName} - En ${motivo}`);
+        return;
       }
 
       // Si no hay IA o falló, usar respuesta simple
