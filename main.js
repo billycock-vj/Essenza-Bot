@@ -154,9 +154,24 @@ function inicializarServidorQR() {
               </html>
             `);
           }
+        } else if (req.url === '/qr-image' && currentQRData) {
+          // Endpoint que devuelve SOLO la imagen del QR (sin HTML)
+          const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(currentQRData)}`;
+          // Redirigir directamente a la imagen
+          res.writeHead(302, { 'Location': qrImageUrl });
+          res.end();
+        } else if (req.url === '/qr-url' && currentQRData) {
+          // Endpoint que devuelve la URL del QR en texto plano
+          const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(currentQRData)}`;
+          res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end(qrImageUrl);
         } else if (req.url === '/health') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ status: 'ok', qrAvailable: !!currentQRData }));
+          res.end(JSON.stringify({ 
+            status: 'ok', 
+            qrAvailable: !!currentQRData,
+            qrUrl: currentQRData ? `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(currentQRData)}` : null
+          }));
         } else {
           res.writeHead(404);
           res.end('Not found');
@@ -1874,9 +1889,9 @@ function iniciarBot() {
       disableWelcome: true, // Deshabilitar mensaje de bienvenida
       catchQR: async (base64Qr, asciiQR, attempts, urlCode) => {
         console.clear();
-        console.log("\n" + "=".repeat(50));
+        console.log("\n" + "=".repeat(70));
         console.log("📱 ESCANEA ESTE QR CON WHATSAPP");
-        console.log("=".repeat(50) + "\n");
+        console.log("=".repeat(70) + "\n");
 
         let qrData = null;
         let qrUrl = null;
@@ -1908,9 +1923,14 @@ function iniciarBot() {
             qrData = base64Qr;
           }
 
-          // Mostrar QR en consola (ASCII)
+          // Mostrar QR en consola (ASCII) - MEJORADO
+          console.log("\n" + "█".repeat(70));
+          console.log("█" + " ".repeat(68) + "█");
           if (asciiQR && typeof asciiQR === "string" && asciiQR.length > 0) {
-            console.log(asciiQR);
+            const lines = asciiQR.split('\n');
+            lines.forEach(line => {
+              console.log("█" + " ".repeat(20) + line + " ".repeat(68 - 20 - line.length) + "█");
+            });
           } else if (qrData) {
             qrcode.generate(qrData, {
               small: false,
@@ -1918,6 +1938,8 @@ function iniciarBot() {
               errorCorrectionLevel: "M",
             });
           }
+          console.log("█" + " ".repeat(68) + "█");
+          console.log("█".repeat(70) + "\n");
 
           // Actualizar QR en el servidor (si existe)
           if (qrData) {
@@ -1926,23 +1948,42 @@ function iniciarBot() {
               currentQRData = qrData;
               currentQRUrl = qrUrl;
               
-              console.log("\n" + "=".repeat(50));
-              console.log("✅ QR CODE GENERADO");
-              console.log("=".repeat(50));
+              // Generar URL directa del QR usando qr-server.com
+              const qrDirectUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(qrData)}`;
               
-              // Mostrar URL si el servidor está activo
+              console.log("\n" + "=".repeat(70));
+              console.log("✅ QR CODE GENERADO - MÚLTIPLES FORMAS DE ACCEDER:");
+              console.log("=".repeat(70));
+              
+              // OPCIÓN 1: URL directa del QR (más simple)
+              console.log("\n🔹 OPCIÓN 1: URL DIRECTA DEL QR (COPIA Y PEGA EN TU NAVEGADOR)");
+              console.log("   " + qrDirectUrl);
+              
+              // OPCIÓN 2: Si hay servidor HTTP
               if (qrServer) {
                 const railwayUrl = process.env.RAILWAY_PUBLIC_DOMAIN 
                   ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
                   : `http://localhost:${process.env.PORT || 3000}`;
-                console.log(`\n🌐 QR DISPONIBLE EN:`);
-                console.log(`🔗 ${railwayUrl}/qr`);
-                console.log(`   O visita: ${railwayUrl}/`);
-                console.log("=".repeat(50) + "\n");
-                logMessage("INFO", "QR actualizado en servidor", { url: railwayUrl });
-              } else {
-                logMessage("WARNING", "QR generado pero servidor no está activo");
+                console.log("\n🔹 OPCIÓN 2: PÁGINA WEB DEL QR");
+                console.log("   " + railwayUrl + "/qr");
+                console.log("   " + railwayUrl + "/qr-image (solo imagen)");
               }
+              
+              // OPCIÓN 3: URL del código QR (si existe)
+              if (qrUrl) {
+                console.log("\n🔹 OPCIÓN 3: URL DEL CÓDIGO QR");
+                console.log("   " + qrUrl);
+              }
+              
+              console.log("\n" + "=".repeat(70));
+              console.log("💡 RECOMENDACIÓN: Usa la OPCIÓN 1 (URL directa)");
+              console.log("   Solo copia y pega esa URL en tu navegador para ver el QR");
+              console.log("=".repeat(70) + "\n");
+              
+              logMessage("INFO", "QR generado", { 
+                qrDirectUrl: qrDirectUrl,
+                hasServer: !!qrServer
+              });
             } catch (qrError) {
               logMessage("WARNING", "No se pudo actualizar QR", { error: qrError.message });
             }
@@ -1954,9 +1995,9 @@ function iniciarBot() {
           });
         }
 
-        console.log("\n" + "=".repeat(50));
+        console.log("\n" + "=".repeat(70));
         console.log("💡 Esperando escaneo del QR...");
-        console.log("=".repeat(50) + "\n");
+        console.log("=".repeat(70) + "\n");
         
         logMessage("INFO", `QR generado - Intento ${attempts || 1}`, null);
       },
