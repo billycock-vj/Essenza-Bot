@@ -6,7 +6,9 @@
   "scripts": {
     "prestart": "npm install",
     "start": "node main.js",
-    "test": "jest"
+    "test": "jest",
+    "logs:railway": "railway logs",
+    "logs:export": "railway logs > railway-logs-$(date +%Y%m%d-%H%M%S).txt"
   },
   "author": "",
   "license": "ISC",
