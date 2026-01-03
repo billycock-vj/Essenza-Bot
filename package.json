@@ -5,7 +5,8 @@
   "main": "main.js",
   "scripts": {
     "prestart": "npm install",
-    "start": "node main.js"
+    "start": "node main.js",
+    "test": "jest"
   },
   "author": "",
   "license": "ISC",
@@ -13,8 +14,12 @@
   "dependencies": {
     "@wppconnect-team/wppconnect": "^1.37.8",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2",
     "openai": "^6.9.1",
-    "qrcode-terminal": "^0.12.0"
+    "p-queue": "^9.0.1",
+    "qrcode-terminal": "^0.12.0",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
   }
 }

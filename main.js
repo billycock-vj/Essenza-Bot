@@ -4,205 +4,154 @@ const qrcode = require("qrcode-terminal");
 const fs = require("fs");
 const path = require("path");
 const OpenAI = require("openai");
+const PQueue = require('p-queue').default;
 
 // ============================================
-// CONFIGURACIÓN (Variables de Entorno)
+// MÓDULOS
 // ============================================
-const ADMIN_NUMBER = process.env.ADMIN_NUMBER || "51983104105@c.us";
-// ============================================
-// VALIDACIÓN TEMPORAL PARA PRUEBAS
-// TODO: QUITAR ESTA VALIDACIÓN DESPUÉS DE PRUEBAS
-// ============================================
-const NUMERO_PRUEBA = "51972002363"; // Solo responder a este número durante pruebas (con código de país)
-const MODO_PRUEBA = true; // Cambiar a false o quitar esta validación después
-// ============================================
-const HORARIO_ATENCION =
-  process.env.HORARIO_ATENCION ||
-  "Lunes a Viernes: 11:00 AM - 5:00 PM, Sábados: 10:00 AM - 2:00 PM";
-const YAPE_NUMERO = process.env.YAPE_NUMERO || "953348917";
-const YAPE_TITULAR = process.env.YAPE_TITULAR || "Esther Ocaña Baron";
-const BANCO_CUENTA = process.env.BANCO_CUENTA || "19194566778095";
-const UBICACION =
-  process.env.UBICACION || "Jiron Ricardo Palma 603, Puente Piedra, Lima, Perú";
-const MAPS_LINK =
-  process.env.MAPS_LINK || "https://maps.app.goo.gl/R5F8PGbcFufNADF39";
-const DEPOSITO_RESERVA = process.env.DEPOSITO_RESERVA || "20";
+const config = require('./config');
+const servicios = require('./data/services');
+const { logMessage, rotarLogs } = require('./utils/logger');
+const { 
+  validarFormatoUserId, 
+  validarFecha, 
+  validarServicio, 
+  sanitizarMensaje, 
+  sanitizarDatosParaLog,
+  obtenerHorarioDelDia
+} = require('./utils/validators');
+const persistence = require('./services/persistence');
+const storage = require('./services/storage');
+const db = require('./services/database');
 
-// Estados de usuario
-const userState = {};
-const humanModeUsers = new Set();
-const userNames = {}; // Recordar nombres de usuarios
-const userData = {}; // Datos adicionales de usuarios
-const reservas = []; // Reservas temporales para recordatorios
-const ultimaRespuestaReserva = {}; // Guardar timestamp de última respuesta en modo reserva
+// ============================================
+// CONFIGURACIÓN (desde módulo)
+// ============================================
+const ADMIN_NUMBER = config.ADMIN_NUMBER; // Mantener para compatibilidad
+const ADMIN_NUMBERS = config.ADMIN_NUMBERS; // Array de todos los administradores
+const HORARIO_ATENCION = config.HORARIO_ATENCION;
+const YAPE_NUMERO = config.YAPE_NUMERO;
+const YAPE_TITULAR = config.YAPE_TITULAR;
+const BANCO_CUENTA = config.BANCO_CUENTA;
+const UBICACION = config.UBICACION;
+const MAPS_LINK = config.MAPS_LINK;
+const DEPOSITO_RESERVA = config.DEPOSITO_RESERVA;
+const LOG_LEVEL = config.LOG_LEVEL;
+const MAX_RESERVAS = config.MAX_RESERVAS;
+
+// ============================================
+// ESTADO DEL BOT (usando StorageService optimizado)
+// ============================================
+// Nota: StorageService usa Map/Set para búsquedas O(1)
+// Acceso a través de storage.getUserState(), storage.getUserData(), etc.
 
 // Control de IA global (solo admin puede activar/desactivar)
 let iaGlobalDesactivada = false;
 
-// Usuarios con bot desactivado por el admin (solo el admin puede responder)
-const usuariosBotDesactivado = new Set();
+// Control de rate limiting para OpenAI (cola de peticiones)
+const queue = new PQueue({ concurrency: 1, interval: 1000, intervalCap: 1 });
 
-// Control de rate limiting para OpenAI (1 segundo entre peticiones)
-let ultimaPeticionIA = 0;
+// Array para guardar referencias de intervalos y limpiarlos al salir
+const intervals = [];
 
-const estadisticas = {
-  usuariosAtendidos: new Set(),
-  totalMensajes: 0,
-  reservasSolicitadas: 0,
-  asesoresActivados: 0,
-  inicio: new Date(),
-};
+// Estadísticas del bot
+let estadisticas;
+
+// Cargar estado persistido al iniciar
+let estadisticasCargadas = persistence.cargarEstadisticas();
+if (estadisticasCargadas) {
+  estadisticas = {
+    usuariosAtendidos: new Set(estadisticasCargadas.usuariosAtendidos || []),
+    totalMensajes: estadisticasCargadas.totalMensajes || 0,
+    reservasSolicitadas: estadisticasCargadas.reservasSolicitadas || 0,
+    asesoresActivados: estadisticasCargadas.asesoresActivados || 0,
+    inicio: estadisticasCargadas.inicio ? new Date(estadisticasCargadas.inicio) : new Date(),
+  };
+} else {
+  estadisticas = {
+    usuariosAtendidos: new Set(),
+    totalMensajes: 0,
+    reservasSolicitadas: 0,
+    asesoresActivados: 0,
+    inicio: new Date(),
+  };
+}
+
+// Cargar reservas persistidas
+const reservasCargadas = persistence.cargarReservas();
+if (reservasCargadas && reservasCargadas.length > 0) {
+  storage.reservas = reservasCargadas.map(r => ({
+    ...r,
+    fechaHora: new Date(r.fechaHora),
+    creada: new Date(r.creada),
+  }));
+  logMessage("INFO", `Cargadas ${reservasCargadas.length} reservas desde persistencia`);
+}
+
+// Cargar userData persistido
+const userDataCargado = persistence.cargarUserData();
+if (userDataCargado) {
+  for (const [userId, data] of Object.entries(userDataCargado)) {
+    storage.setUserData(userId, data);
+  }
+  logMessage("INFO", `Cargados datos de ${Object.keys(userDataCargado).length} usuarios desde persistencia`);
+}
 
 // ============================================
-// SERVICIOS DETALLADOS (Actualizado según Knowledge Base)
+// SERVICIOS DETALLADOS (desde módulo data/services.js)
 // ============================================
-const servicios = {
-  1: {
-    nombre: "Masajes",
-    categoria: "Masajes",
-    opciones: [
-      { nombre: "Masaje Relajante", precio: "S/35", duracion: "45-60 minutos" },
-      {
-        nombre: "Masaje Descontracturante",
-        precio: "S/35",
-        duracion: "45-60 minutos",
-      },
-      {
-        nombre: "Masaje Terapéutico",
-        precio: "S/45",
-        duracion: "45-60 minutos",
-      },
-      {
-        nombre: "Masaje Relajante con Piedras Calientes o Compresas",
-        precio: "S/50",
-        duracion: "45-60 minutos",
-      },
-      {
-        nombre: "Masaje Descontracturante con Electroterapia",
-        precio: "S/50",
-        duracion: "45-60 minutos",
-      },
-      {
-        nombre: "Masaje Descontracturante con Esferas Chinas",
-        precio: "S/40",
-        duracion: "45-60 minutos",
-      },
-      {
-        nombre: "Masaje Terapéutico con Compresas y Electroterapia",
-        precio: "S/60",
-        duracion: "45-60 minutos",
-      },
-    ],
-    descripcion:
-      "Masajes relajantes, descontracturantes y terapéuticos para aliviar tensiones, estrés y dolores musculares",
-    beneficios: [
-      "Alivia dolores musculares y tensiones",
-      "Reduce el estrés y la ansiedad",
-      "Mejora la circulación",
-      "Promueve la relajación profunda",
-      "Recuperación física y mental",
-    ],
-    imagen: process.env.SERVICIO1_IMAGEN || null,
-  },
-  2: {
-    nombre: "Tratamientos Faciales",
-    categoria: "Belleza",
-    opciones: [
-      {
-        nombre: "Limpieza Facial Básica",
-        precio: "S/30",
-        duracion: "60 minutos",
-      },
-      {
-        nombre: "Limpieza Facial Profunda",
-        precio: "S/60",
-        duracion: "60-90 minutos",
-      },
-      {
-        nombre: "Parálisis Facial + Consulta",
-        precio: "S/50",
-        duracion: "60 minutos",
-      },
-    ],
-    descripcion:
-      "Tratamientos faciales para rejuvenecer, limpiar y cuidar tu piel",
-    beneficios: [
-      "Elimina impurezas y puntos negros",
-      "Hidrata y nutre la piel",
-      "Reduce arrugas y líneas de expresión",
-      "Mejora la textura y brillo",
-      "Tratamiento especializado para parálisis facial",
-    ],
-    imagen: process.env.SERVICIO2_IMAGEN || null,
-  },
-  3: {
-    nombre: "Manicura y Pedicura",
-    categoria: "Belleza",
-    precio: "Consultar",
-    duracion: "90 minutos",
-    descripcion: "Cuidado completo de uñas de manos y pies",
-    beneficios: [
-      "Uñas limpias y bien cuidadas",
-      "Exfoliación y hidratación",
-      "Esmaltado profesional",
-      "Relajación de manos y pies",
-    ],
-    imagen: process.env.SERVICIO3_IMAGEN || null,
-  },
-  4: {
-    nombre: "Extensiones de Pestañas",
-    categoria: "Belleza",
-    precio: "Consultar",
-    duracion: "120 minutos",
-    descripcion: "Extensiones de pestañas naturales y duraderas",
-    beneficios: [
-      "Pestañas más largas y voluminosas",
-      "Efecto natural y elegante",
-      "Duración de 3-4 semanas",
-      "Sin necesidad de máscara",
-    ],
-    imagen: process.env.SERVICIO4_IMAGEN || null,
-  },
-  5: {
-    nombre: "Diseño de Cejas",
-    categoria: "Belleza",
-    precio: "Consultar",
-    duracion: "30 minutos",
-    descripcion: "Diseño y perfilado profesional de cejas",
-    beneficios: [
-      "Cejas perfectamente definidas",
-      "Forma personalizada a tu rostro",
-      "Técnica profesional",
-      "Resultado natural",
-    ],
-    imagen: process.env.SERVICIO5_IMAGEN || null,
-  },
-  6: {
-    nombre: "Fisioterapia y Rehabilitación",
-    categoria: "Rehabilitación",
-    opciones: [
-      {
-        nombre: "Evaluación + Tratamiento de Fisioterapia",
-        precio: "S/50",
-        duracion: "60 minutos",
-      },
-    ],
-    descripcion:
-      "Tratamientos terapéuticos para recuperación física y rehabilitación",
-    beneficios: [
-      "Alivia dolores crónicos",
-      "Mejora la movilidad",
-      "Recuperación post-lesión",
-      "Bienestar general",
-      "Evaluación profesional",
-    ],
-    imagen: process.env.SERVICIO6_IMAGEN || null,
-  },
-};
+// Los servicios ahora se cargan desde el módulo
 
 // ============================================
 // FUNCIONES AUXILIARES
 // ============================================
+
+// Función para verificar si un usuario es administrador
+function esAdministrador(userId) {
+  if (!userId) return false;
+  return ADMIN_NUMBERS.includes(userId);
+}
+
+// Función helper para inicializar objetos de usuario (usando storage)
+function inicializarUsuario(userId) {
+  if (!storage.getUserData(userId)) {
+    storage.setUserData(userId, {
+      bienvenidaEnviada: false,
+      saludoEnviado: false,
+      ultimaInteraccion: null
+    });
+  }
+  
+  if (!storage.getHistorial(userId) || storage.getHistorial(userId).length === 0) {
+    storage.setHistorial(userId, []);
+  }
+  
+  if (storage.getUserState(userId) === undefined) {
+    storage.setUserState(userId, null);
+  }
+}
+
+// Función para calcular tokens aproximados (1 token ≈ 4 caracteres)
+function calcularTokens(mensaje) {
+  if (!mensaje || typeof mensaje !== 'string') return 0;
+  return Math.ceil(mensaje.length / 4);
+}
+
+// Función para limitar historial por tokens (no solo cantidad)
+function limitarHistorialPorTokens(historial, maxTokens = 2000) {
+  let tokensAcumulados = 0;
+  const historialLimitado = [];
+  
+  // Recorrer desde el final (mensajes más recientes primero)
+  for (let i = historial.length - 1; i >= 0; i--) {
+    const tokens = calcularTokens(historial[i].content || '');
+    if (tokensAcumulados + tokens > maxTokens) break;
+    tokensAcumulados += tokens;
+    historialLimitado.unshift(historial[i]);
+  }
+  
+  return historialLimitado;
+}
 
 // Fuzzy matching para errores de escritura
 function fuzzyMatch(input, target, threshold = 0.7) {
@@ -838,14 +787,8 @@ async function consultarIA(mensajeUsuario, contextoUsuario = {}) {
     return null; // Si no hay API key, retornar null
   }
 
-  // Rate limiting: esperar 1 segundo entre peticiones
-  const ahora = Date.now();
-  const tiempoDesdeUltimaPeticion = ahora - ultimaPeticionIA;
-  if (tiempoDesdeUltimaPeticion < 1000) {
-    const tiempoEspera = 1000 - tiempoDesdeUltimaPeticion;
-    await new Promise((resolve) => setTimeout(resolve, tiempoEspera));
-  }
-  ultimaPeticionIA = Date.now();
+  // Usar cola de peticiones para rate limiting (1 petición por segundo)
+  return await queue.add(async () => {
 
   try {
     // Prompt consolidado para Essenza AI
@@ -866,8 +809,19 @@ Ubicación: Jiron Ricardo Palma 603, Puente Piedra, Lima, Perú
 Mapa: ${MAPS_LINK} (mantener como link clicable)
 
 Horario de atención:
-- Lunes a Viernes de 11am a 5pm
-- Sábados de 10am a 2pm
+- Lunes a Jueves: 11:00 - 19:00
+- Viernes: 11:00 - 19:00
+- Sábado: 10:00 - 16:00
+- Domingo: Cerrado
+
+IMPORTANTE - HORARIO ESPECÍFICO POR DÍA:
+Cuando el usuario mencione "mañana", "hoy", o una fecha específica, DEBES verificar qué día de la semana es y dar el horario CORRECTO de ese día:
+- Si es Lunes, Martes, Miércoles o Jueves: 11:00 - 19:00
+- Si es Viernes: 11:00 - 19:00
+- Si es Sábado: 10:00 - 16:00
+- Si es Domingo: Cerrado (no hay atención)
+
+Ejemplo: Si el usuario pregunta "¿qué horario tienen mañana?" y mañana es Sábado, debes decir "10:00 - 16:00", NO "11:00 - 19:00".
 
 MÉTODOS DE PAGO Y DEPÓSITO
 
@@ -883,76 +837,92 @@ Métodos de pago:
 
 El depósito se descuenta del total del servicio.
 
-SERVICIOS CON PRECIOS
+SERVICIOS CON PRECIOS (ACTUALIZADOS)
 
-REGLA PRINCIPAL:
-Los precios promocionales solo se aplican si la fecha actual es diciembre 2025.
-El bot usa fecha de sistema para decidir qué precio mostrar.
-Si no es diciembre o el servicio no tiene promo: mostrar solo precio normal.
-Si el cliente pregunta por promociones fuera de diciembre, responder:
-"De momento no tenemos promociones activas, pero puedo recomendarte combos y tratamientos según lo que necesites."
+MASAJES BÁSICOS (45-60 minutos):
+- Masaje Relajante: S/35
+- Masaje Descontracturante: S/35
+- Masaje Terapéutico: S/45
 
-CATEGORÍA MASAJES RELAJANTES:
-- Masaje Relajante: 50 (promo 25)
-- Masaje con Piedras Calientes: 80 (promo 35)
-- Masaje con Esferas Chinas: 70 (promo 30)
-- Exfoliación Corporal: 50 (promo 30)
+MASAJES COMPUESTOS (45-60 minutos):
+- Relajante + Piedras Calientes: S/50 (Combina calor y masaje)
+- Descontracturante + Electroterapia: S/50 (Estimulación eléctrica, potencia el masaje)
+- Descontracturante + Esferas Chinas: S/40 (Acupresión con esferas, reduce el dolor)
+- Terapéutico + Compresas + Electroterapia: S/60 (Tratamiento integral, acelera recuperación)
 
-CATEGORÍA TERAPIAS Y FISIOTERAPIA:
-- Masaje Descontracturante: 55 (promo 30)
-- Masaje Terapéutico Cuerpo Completo: 80 (promo 60)
-- Terapia Física: 70 (promo 40)
-- Terapia del Dolor zona afectada: 60 (promo 50)
-- Punción Seca: 60 (promo 40)
-- Auriculoterapia: 50 (promo 30)
-- Reflexología: 70 (promo 40)
+FISIOTERAPIA Y TERAPIAS:
+- Evaluación + Tratamiento de Fisioterapia: S/50 (60 minutos)
+- Fisioterapia terapéutica
+- Rehabilitación muscular y articular
+- Alivio de dolores cervicales y lumbares
+- Terapia para estrés y tensión corporal
 
-CATEGORÍA FACIALES:
-- Facial Básico: 40 (sin promo)
-- Facial Profundo: 70 (sin promo)
-- Terapia Facial: 50 (sin promo)
+TRATAMIENTOS FACIALES:
+- Limpieza Facial Básica: S/30 (60 minutos)
+- Limpieza Facial Profunda: S/60 (60-90 minutos)
+- Parálisis Facial + Consulta: S/50 (60 minutos)
 
-CATEGORÍA ESPECIALES:
-- Terapia Neural: 80 (sin promo)
+OTROS SERVICIOS:
+- Manicura y Pedicura: Consultar precio (90 minutos)
+- Extensiones de Pestañas: Consultar precio (120 minutos)
+- Diseño de Cejas: Consultar precio (30 minutos)
 
-PROMOCIONES Y COMBOS
+PAQUETES MENSUALES (IDEALES PARA MANTENIMIENTO):
 
-Solo mostrar si es diciembre con fecha válida. El bot debe seleccionar y recomendar combos según necesidad.
+1. PAQUETE RELAJACIÓN: S/80
+   - 3 masajes relajantes
+   - Ideal para estrés y descanso
 
-COMBOS RELAX:
-- Masaje Relajante + Facial Básico: 60
-- Masaje Relajante + Exfoliación: 55
-- Facial Profundo + Terapia Facial: 100
-- Limpieza Básica + Piedras Calientes: 75
+2. PAQUETE BIENESTAR: S/100
+   - 4 masajes terapéuticos
+   - Para mantenimiento muscular
 
-COMBOS PARA DOLOR:
-- Descontracturante + Terapia del Dolor: 70
-- Terapéutico + Punción Seca: 95
-- Reflexología + Punción Seca: 70
-- Terapia Física + Auriculoterapia: 60
+3. PAQUETE RECUPERACIÓN: S/140
+   - 4 sesiones de fisioterapia
+   - Ideal para dolores recurrentes
 
-COMBOS PREMIUM:
-- Piedras Calientes + Facial Profundo: 95
-- Terapéutico + Exfoliación + Reflexología: 150
-- Esferas Chinas + Terapia Facial: 80
-- Descontracturante + Facial Profundo + Auriculoterapia: 140
+PAQUETES PARA DOS PERSONAS:
 
-PAQUETE AMOR (PROMOCIÓN NAVIDAD):
-Esta promo se activa solo cada diciembre del 1 al 23.
-- Precio promo diciembre hasta 23: 120
-- Precio regular fuera de ese periodo: 150
-Incluye: masaje a elección, piedras calientes, reflexología, exfoliación, limpieza facial, aromaterapia, musicoterapia, copa de vino, frutas, alfajor, decoración romántica.
-Ideal para parejas.
-La IA debe mostrar el precio correcto según fecha actual.
+1. PAQUETE ARMÓNICO: S/140 (2 personas)
+   Incluye:
+   - Masaje con pindas herbales
+   - Compresas calientes
+   - Reflexología
+   - Exfoliación corporal
+   - Fangoterapia
+   - Musicaterapia/aromaterapia
+   - Copa de vino 🍷 / mate ☕
+   - Snack de frutas
+
+2. PAQUETE AMOR: S/150 (2 personas)
+   Incluye:
+   - Masaje relajante/descontracturante
+   - Piedras calientes
+   - Reflexología
+   - Exfoliación corporal
+   - Limpieza facial
+   - Aromaterapia/musicaterapia
+   - Copa de vino
+   - Snack de frutas y alfajores
+   - Decoración romántica
+
+NOTA IMPORTANTE SOBRE PRECIOS:
+- Todos los precios mostrados son los precios actuales y correctos
+- Los paquetes son ideales para ahorrar y tener tratamientos regulares
+- Los paquetes para dos personas son perfectos para parejas o amigos
 
 RECOMENDACIONES INTELIGENTES
 
 El bot debe responder según necesidad:
-- Dolor fuerte → Terapéutico, Punción seca, Terapia del dolor, Neural
-- Estrés → Relajante, Piedras, Esferas
-- Tensión muscular → Descontracturante, Terapia Física
-- Piel → Faciales
-- Relajación profunda → Reflexología, Auriculoterapia, Exfoliación
+- Dolor fuerte → Masaje Terapéutico, Terapéutico + Compresas + Electroterapia, Fisioterapia, Paquete Recuperación (S/140 - 4 sesiones)
+- Dolor recurrente → Paquete Recuperación (S/140 - 4 sesiones de fisioterapia)
+- Estrés → Masaje Relajante, Relajante + Piedras Calientes, Paquete Relajación (S/80 - 3 masajes)
+- Tensión muscular → Masaje Descontracturante, Descontracturante + Electroterapia, Descontracturante + Esferas Chinas
+- Mantenimiento muscular → Paquete Bienestar (S/100 - 4 masajes terapéuticos)
+- Piel → Limpieza Facial Básica o Profunda
+- Relajación profunda → Relajante + Piedras Calientes, Reflexología
+- Para dos personas → Paquete Armónico (S/140) o Paquete Amor (S/150)
+- Parejas románticas → Paquete Amor (S/150) - incluye decoración romántica, vino, frutas
 
 FLUJO DE CONVERSACIÓN
 
@@ -968,10 +938,14 @@ FLUJO DE CONVERSACIÓN
 
 OBJECIONES
 
-"Es caro" → Ofrecer combos y si es diciembre ofrecer promociones
-"Estoy dudando" → Generar urgencia suave
-"No quiero depósito" → Explicar que asegura el espacio y se descuenta
-"Quiero para dos" → Sugerir Paquete Amor según fecha
+"Es caro" → Ofrecer paquetes mensuales (ahorran dinero), masajes básicos (S/35), o paquetes para dos personas (mejor precio por persona)
+"Estoy dudando" → Generar urgencia suave, mencionar beneficios de los paquetes
+"No quiero depósito" → Explicar que asegura el espacio y se descuenta del total
+"Quiero para dos" → Sugerir Paquete Armónico (S/140) o Paquete Amor (S/150) - ambos incluyen múltiples servicios
+"Quiero algo romántico" → Recomendar Paquete Amor (S/150) - incluye decoración romántica, vino, frutas
+"Tengo dolor recurrente" → Recomendar Paquete Recuperación (S/140 - 4 sesiones de fisioterapia)
+"Quiero mantenimiento" → Recomendar Paquete Bienestar (S/100 - 4 masajes terapéuticos)
+"Quiero relajarme regularmente" → Recomendar Paquete Relajación (S/80 - 3 masajes relajantes)
 "Quiero hablar con alguien" → Responder exactamente:
 "Claro, te comunico con un asesor humano en un momento"
 y el bot deja de hablar, no agrega nada más.
@@ -985,8 +959,25 @@ CONTEXTO DE LA CONVERSACIÓN:
       year: "numeric",
       month: "long",
       day: "numeric",
+      weekday: "long"
     })}
 - Ya se saludó antes: ${contextoUsuario.yaSaludo || false}
+${(() => {
+  // Calcular información de mañana para el contexto
+  const mañana = new Date();
+  mañana.setDate(mañana.getDate() + 1);
+  const horarioMañana = obtenerHorarioDelDia(mañana);
+  const nombreDiaMañana = mañana.toLocaleDateString('es-PE', { 
+    weekday: 'long',
+    timeZone: 'America/Lima'
+  });
+  
+  if (horarioMañana.abierto) {
+    return `- Mañana (${nombreDiaMañana.charAt(0).toUpperCase() + nombreDiaMañana.slice(1)}): Horario ${horarioMañana.apertura}:00 - ${horarioMañana.cierre}:00`;
+  } else {
+    return `- Mañana (${nombreDiaMañana.charAt(0).toUpperCase() + nombreDiaMañana.slice(1)}): ${horarioMañana.mensaje || 'Cerrado'}`;
+  }
+})()}
 
 REGLA CRÍTICA SOBRE SALUDOS:
 - Si "Ya se saludó antes" es true, NO debes saludar de nuevo. NO uses "Hola", "Buenos días", "Buenas tardes", ni ningún saludo.
@@ -997,25 +988,60 @@ REGLA ANTI ALUCINACIÓN:
 Si la IA no sabe algo responde:
 "No tengo esa información exacta disponible, pero puedo consultar con un asesor humano si deseas."
 
+REGLA CRÍTICA SOBRE MEMORIA Y CONTEXTO:
+- Tienes acceso al historial de la conversación anterior. ÚSALO.
+- NO repitas preguntas que ya fueron respondidas.
+- Si el usuario ya dijo "tengo dolor en la lumbar", NO vuelvas a preguntar "¿qué zona del cuerpo?"
+- Si el usuario ya dijo "intenso", NO vuelvas a preguntar "¿intenso o suave?"
+- Si el usuario ya mencionó una fecha/hora, NO vuelvas a preguntar por fecha/hora.
+- RECUERDA la información que el usuario ya compartió y avanza en el flujo.
+- Si ya recomendaste un servicio, NO vuelvas a preguntar lo mismo, avanza al siguiente paso (fecha, depósito, etc.).
+
 Meta final del bot: resolver dudas, recomendar, cerrar reserva.`;
+
+    // Construir array de mensajes con historial
+    const messages = [
+      {
+        role: "system",
+        content: contextoNegocio,
+      },
+    ];
+
+    // Agregar historial de conversación si existe (últimos 8 mensajes para mantener contexto)
+    const historial = contextoUsuario.historial || [];
+    if (historial.length > 0) {
+      // Agregar solo los últimos 8 mensajes para no exceder tokens
+      const historialReciente = historial.slice(-8);
+      messages.push(...historialReciente);
+    }
+
+    // Agregar el mensaje actual
+    messages.push({
+      role: "user",
+      content: mensajeUsuario,
+    });
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini", // Modelo económico y rápido
-      messages: [
-        {
-          role: "system",
-          content: contextoNegocio,
-        },
-        {
-          role: "user",
-          content: mensajeUsuario,
-        },
-      ],
+      messages: messages,
       max_tokens: 500, // Respuestas más completas y detalladas
       temperature: 0.8, // Más creatividad y naturalidad
     });
 
+    // Validar respuesta de OpenAI
+    if (!completion?.choices?.[0]?.message?.content) {
+      logMessage("ERROR", "Respuesta inválida de OpenAI", {
+        completion: JSON.stringify(completion).substring(0, 200)
+      });
+      return null;
+    }
+
     const respuesta = completion.choices[0].message.content.trim();
+    if (!respuesta || respuesta.length === 0) {
+      logMessage("WARNING", "Respuesta vacía de OpenAI");
+      return null;
+    }
+
     return respuesta;
   } catch (error) {
     logMessage("ERROR", "Error al consultar IA", {
@@ -1023,28 +1049,78 @@ Meta final del bot: resolver dudas, recomendar, cerrar reserva.`;
     });
     return null; // Si hay error, retornar null para usar respuesta por defecto
   }
+  });
 }
 
+// MAX_RESERVAS ya está definido en config
+
+// Funciones validarFecha y validarServicio ahora vienen del módulo utils/validators
+
 // Guardar reserva para recordatorio
-function guardarReserva(userId, userName, servicio, fechaHora) {
+function guardarReserva(userId, userName, servicio, fechaHora, duracionMinutos = 60) {
+  // Validar fecha y horario de atención
+  const validacionFecha = validarFecha(fechaHora, duracionMinutos);
+  if (!validacionFecha.valida) {
+    logMessage("ERROR", `Error al guardar reserva: ${validacionFecha.error}`, {
+      userId: userId,
+      servicio: servicio,
+      fechaHora: fechaHora,
+      duracion: duracionMinutos
+    });
+    return { exito: false, error: validacionFecha.error };
+  }
+  
+  // Validar servicio (opcional, pero recomendado)
+  const validacionServicio = validarServicio(servicio);
+  if (!validacionServicio.existe && LOG_LEVEL === 'verbose') {
+    logMessage("WARNING", `Servicio no encontrado en base de datos`, {
+      servicio: servicio
+    });
+  }
+  
   const reserva = {
     userId,
     userName,
     servicio,
-    fechaHora: new Date(fechaHora),
+    fechaHora: validacionFecha.fecha,
     notificado: false,
     creada: new Date(),
   };
-  reservas.push(reserva);
-  logMessage("INFO", `Reserva guardada para recordatorio`, { reserva });
+  
+  // Si se alcanza el límite, eliminar las más antiguas
+  const reservas = storage.getReservas();
+  if (reservas.length >= MAX_RESERVAS) {
+    reservas.sort((a, b) => a.creada - b.creada);
+    reservas.splice(0, reservas.length - MAX_RESERVAS + 1);
+    logMessage("WARNING", `Límite de reservas alcanzado, eliminando las más antiguas`);
+  }
+  
+  storage.addReserva(reserva);
+  // Guardar persistencia
+  persistence.guardarReservas(storage.getReservas());
+  logMessage("INFO", `Reserva guardada para recordatorio`, { 
+    servicio: reserva.servicio,
+    fechaHora: reserva.fechaHora.toISOString(),
+    duracion: duracionMinutos
+  });
+  
+  return { exito: true, reserva: reserva };
 }
 
 // Verificar y enviar recordatorios
 async function verificarRecordatorios(client) {
-  const ahora = new Date();
-  const en24Horas = new Date(ahora.getTime() + 24 * 60 * 60 * 1000);
+  try {
+    const ahora = new Date();
+    const en24Horas = new Date(ahora.getTime() + 24 * 60 * 60 * 1000);
+    
+    // Obtener reservas desde la base de datos
+    const reservas = await db.obtenerReservas({
+      estado: 'pendiente',
+      fechaDesde: ahora,
+      fechaHasta: en24Horas
+    });
 
-  for (const reserva of reservas) {
+    for (const reserva of reservas) {
     if (
       !reserva.notificado &&
       reserva.fechaHora <= en24Horas &&
@@ -1054,6 +1130,17 @@ async function verificarRecordatorios(client) {
         const horasRestantes = Math.round(
           (reserva.fechaHora - ahora) / (1000 * 60 * 60)
         );
+
+        // Validar que la reserva sea en el futuro
+        if (horasRestantes <= 0) {
+          logMessage("WARNING", `Reserva pasada detectada para ${reserva.userName}`, {
+            fechaHora: reserva.fechaHora,
+            ahora: ahora
+          });
+          reserva.notificado = true; // Marcar como notificado para no volver a intentar
+          continue;
+        }
+
         await enviarMensajeSeguro(
           client,
           reserva.userId,
@@ -1065,7 +1152,8 @@ async function verificarRecordatorios(client) {
             `⏳ *En aproximadamente ${horasRestantes} hora(s)*\n\n` +
             `¡Te esperamos en Essenza Spa! 🌿`
         );
-        reserva.notificado = true;
+        // Actualizar en base de datos
+        await db.actualizarReserva(reserva.id, { notificado: true });
         logMessage("SUCCESS", `Recordatorio enviado a ${reserva.userName}`);
       } catch (error) {
         logMessage("ERROR", `Error al enviar recordatorio`, {
@@ -1075,11 +1163,52 @@ async function verificarRecordatorios(client) {
     }
   }
 
-  // Limpiar reservas antiguas (más de 7 días)
-  const hace7Dias = new Date(ahora.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const reservasLimpias = reservas.filter((r) => r.fechaHora > hace7Dias);
-  reservas.length = 0;
-  reservas.push(...reservasLimpias);
+    // Limpiar reservas antiguas (más de 7 días) - ahora se hace automáticamente con SQLite
+    // Las reservas se mantienen en la base de datos, no necesitamos limpiar manualmente
+    
+    // Sincronizar storage con base de datos para recordatorios
+    const reservasPendientes = await db.obtenerReservas({
+      estado: 'pendiente',
+      fechaDesde: ahora
+    });
+    storage.reservas = reservasPendientes.slice(0, MAX_RESERVAS);
+    
+  } catch (error) {
+    logMessage("ERROR", "Error al verificar recordatorios", {
+      error: error.message
+    });
+  }
+}
+
+// Consultar disponibilidad para una fecha
+async function consultarDisponibilidad(fecha, duracionMinima = 60) {
+  try {
+    const horariosDisponibles = await db.consultarDisponibilidad(fecha, duracionMinima);
+    return horariosDisponibles;
+  } catch (error) {
+    logMessage("ERROR", "Error al consultar disponibilidad", {
+      error: error.message,
+      fecha: fecha.toISOString()
+    });
+    return [];
+  }
+}
+
+// Formatear horarios disponibles para mostrar
+function formatearHorariosDisponibles(horarios) {
+  if (horarios.length === 0) {
+    return "❌ *No hay horarios disponibles* para esta fecha.";
+  }
+  
+  const horariosTexto = horarios.map((h, idx) => {
+    const hora = h.toLocaleTimeString("es-PE", { 
+      hour: "2-digit", 
+      minute: "2-digit" 
+    });
+    return `${idx + 1}. ${hora}`;
+  }).join("\n");
+  
+  return `✅ *Horarios disponibles:*\n\n${horariosTexto}\n\n💡 *Selecciona un horario escribiendo el número o la hora.*`;
 }
 
 // Obtener estadísticas
@@ -1101,14 +1230,81 @@ function obtenerEstadisticas() {
   `.trim();
 }
 
+// Obtener citas del día para administradores
+async function obtenerCitasDelDia(fecha = null) {
+  try {
+    const fechaConsulta = fecha || new Date();
+    const inicioDia = new Date(fechaConsulta);
+    inicioDia.setHours(0, 0, 0, 0);
+    const finDia = new Date(fechaConsulta);
+    finDia.setHours(23, 59, 59, 999);
+
+    const reservas = await db.obtenerReservas({
+      fechaDesde: inicioDia,
+      fechaHasta: finDia
+    });
+
+    if (reservas.length === 0) {
+      const fechaFormateada = fechaConsulta.toLocaleDateString('es-PE', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+      return `📅 *CITAS DEL DÍA*\n\n${fechaFormateada}\n\n✅ No hay citas programadas para hoy.`;
+    }
+
+    // Ordenar por hora
+    reservas.sort((a, b) => a.fechaHora - b.fechaHora);
+
+    const fechaFormateada = fechaConsulta.toLocaleDateString('es-PE', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+
+    let mensaje = `📅 *CITAS DEL DÍA*\n\n${fechaFormateada}\n\n`;
+    mensaje += `📋 *Total: ${reservas.length} cita(s)*\n\n`;
+
+    reservas.forEach((reserva, index) => {
+      const hora = reserva.fechaHora.toLocaleTimeString('es-PE', {
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      const estadoEmoji = reserva.estado === 'confirmada' ? '✅' : 
+                          reserva.estado === 'cancelada' ? '❌' : '⏳';
+      
+      mensaje += `${index + 1}. ${estadoEmoji} *${hora}*\n`;
+      mensaje += `   👤 ${reserva.userName}\n`;
+      mensaje += `   💆 ${reserva.servicio}\n`;
+      mensaje += `   ⏱️ ${reserva.duracion} min\n`;
+      mensaje += `   📱 ${extraerNumero(reserva.userId)}\n`;
+      if (reserva.deposito > 0) {
+        mensaje += `   💰 Depósito: S/ ${reserva.deposito}\n`;
+      }
+      mensaje += `   📊 Estado: ${reserva.estado}\n\n`;
+    });
+
+    return mensaje.trim();
+  } catch (error) {
+    logMessage("ERROR", "Error al obtener citas del día", {
+      error: error.message
+    });
+    return "❌ Error al obtener las citas del día. Por favor, intenta más tarde.";
+  }
+}
+
 // ============================================
 // INICIALIZACIÓN DE OPENAI (se inicializará después de definir logMessage)
 // ============================================
 let openai = null;
 
 // ============================================
-// SISTEMA DE LOGS
+// SISTEMA DE LOGS (desde módulo utils/logger.js)
 // ============================================
+// logMessage y rotarLogs ahora vienen del módulo
+
 // ============================================
 // FUNCIÓN HELPER PARA ENVIAR MENSAJES DE FORMA SEGURA
 // ============================================
@@ -1147,10 +1343,7 @@ async function enviarMensajeSeguro(client, userId, mensaje) {
     }
 
     // Validar que el número tiene formato válido (@c.us o @lid)
-    const esFormatoValido =
-      (numeroFormateado.includes("@c.us") ||
-        numeroFormateado.includes("@lid")) &&
-      numeroFormateado.length >= 13;
+    const esFormatoValido = validarFormatoUserId(numeroFormateado);
 
     if (!esFormatoValido) {
       logMessage("ERROR", "Número de WhatsApp inválido para enviar mensaje", {
@@ -1174,10 +1367,12 @@ async function enviarMensajeSeguro(client, userId, mensaje) {
     // Enviar el mensaje usando el número formateado correctamente
     await client.sendText(numeroFormateado, mensaje);
 
-    logMessage("SUCCESS", `Mensaje enviado correctamente`, {
-      destino: extraerNumero(numeroFormateado),
-      longitud: mensaje.length,
-    });
+    if (LOG_LEVEL === 'verbose') {
+      logMessage("SUCCESS", `Mensaje enviado correctamente`, {
+        destino: extraerNumero(numeroFormateado),
+        longitud: mensaje.length,
+      });
+    }
 
     return true;
   } catch (error) {
@@ -1190,47 +1385,13 @@ async function enviarMensajeSeguro(client, userId, mensaje) {
   }
 }
 
-function logMessage(type, message, data = null) {
-  const timestamp = new Date().toLocaleString("es-PE", {
-    dateStyle: "short",
-    timeStyle: "medium",
-  });
-  const logDir = path.join(__dirname, "logs");
+// Funciones rotarLogs y logMessage ahora vienen del módulo utils/logger.js
 
-  if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
-  }
-
-  const logFile = path.join(
-    logDir,
-    `bot-${new Date().toISOString().split("T")[0]}.log`
-  );
-  const logEntry = `[${timestamp}] [${type}] ${message}${
-    data ? ` | ${JSON.stringify(data)}` : ""
-  }\n`;
-
-  fs.appendFileSync(logFile, logEntry, "utf8");
-
-  const colors = {
-    INFO: "\x1b[36m",
-    SUCCESS: "\x1b[32m",
-    WARNING: "\x1b[33m",
-    ERROR: "\x1b[31m",
-    RESET: "\x1b[0m",
-  };
-
-  const color = colors[type] || colors.INFO;
-  console.log(`${color}[${timestamp}] [${type}]${colors.RESET} ${message}`);
-  if (data) {
-    console.log(`  └─ Datos:`, data);
-  }
-}
-
-// Inicializar OpenAI después de definir logMessage
-if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim() !== "") {
+// Inicializar OpenAI
+if (config.OPENAI_API_KEY && config.OPENAI_API_KEY.trim() !== "") {
   try {
     openai = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY.trim(),
+      apiKey: config.OPENAI_API_KEY.trim(),
     });
     logMessage("SUCCESS", "✅ OpenAI inicializado correctamente");
   } catch (error) {
@@ -1253,7 +1414,7 @@ if (process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY.trim() !== "") {
 // ============================================
 // FUNCIÓN PARA LIMPIAR ARCHIVOS BLOQUEADOS
 // ============================================
-function limpiarArchivosBloqueados() {
+async function limpiarArchivosBloqueados() {
   try {
     const tokensDir = path.join(__dirname, "tokens", "essenza-bot", "Default");
     const preferencesPath = path.join(tokensDir, "Preferences");
@@ -1300,8 +1461,7 @@ function limpiarArchivosBloqueados() {
               if (i < 4) {
                 // Esperar antes de reintentar (aumentar tiempo progresivamente)
                 const waitTime = (i + 1) * 300;
-                const start = Date.now();
-                while (Date.now() - start < waitTime) {}
+                await new Promise(resolve => setTimeout(resolve, waitTime));
               } else {
                 logMessage(
                   "WARNING",
@@ -1314,7 +1474,10 @@ function limpiarArchivosBloqueados() {
           }
         }
       } catch (error) {
-        // Ignorar errores individuales
+        logMessage("WARNING", "Error al procesar archivo individual (no crítico)", {
+          error: error.message,
+          archivo: archivo
+        });
       }
     }
 
@@ -1354,62 +1517,123 @@ function limpiarArchivosBloqueados() {
 let clientInstance = null;
 let sessionName = "essenza-bot"; // Variable global para el nombre de sesión
 
-// Limpiar archivos bloqueados antes de iniciar
+// Limpiar archivos bloqueados antes de iniciar (ejecutar de forma asíncrona)
 logMessage("INFO", "Verificando y limpiando archivos bloqueados...");
-const archivosLimpiados = limpiarArchivosBloqueados();
+(async () => {
+  try {
+    await limpiarArchivosBloqueados();
+  } catch (error) {
+    logMessage("WARNING", "Error al limpiar archivos bloqueados (no crítico)", {
+      error: error.message
+    });
+  }
+})();
 
 // Verificar si el directorio está bloqueado
 const tokensPath = path.join(__dirname, "tokens", "essenza-bot");
 const defaultPath = path.join(tokensPath, "Default");
 const preferencesPath = path.join(defaultPath, "Preferences");
 
-// Verificar si hay una sesión guardada válida antes de renombrar
-// Solo renombrar si Preferences está bloqueado Y no hay archivos de sesión importantes
-if (!archivosLimpiados && fs.existsSync(preferencesPath)) {
-  // Verificar si hay archivos de sesión importantes (como Local Storage)
-  const sessionFiles = [
-    path.join(defaultPath, "Local Storage"),
-    path.join(defaultPath, "Session Storage"),
-    path.join(defaultPath, "IndexedDB"),
-  ];
+// Variable para almacenar la ruta del user-data-dir (puede ser temporal)
+let userDataDir = path.join(__dirname, "tokens", "essenza-bot");
 
-  const hasSessionData = sessionFiles.some((file) => {
-    try {
-      return fs.existsSync(file) && fs.statSync(file).isDirectory();
-    } catch {
-      return false;
-    }
-  });
-
-  if (!hasSessionData) {
-    // Solo renombrar si no hay datos de sesión importantes
-    try {
-      const timestamp = Date.now();
-      const backupPath = path.join(tokensPath, `Default.backup.${timestamp}`);
-      if (fs.existsSync(defaultPath)) {
-        fs.renameSync(defaultPath, backupPath);
-        logMessage(
-          "SUCCESS",
-          `Carpeta Default renombrada (sin datos de sesión). El bot creara una nueva.`
-        );
-      }
-    } catch (renameError) {
-      // Si no se puede renombrar, usar un nombre de sesión temporal
-      logMessage(
-        "WARNING",
-        "No se pudo renombrar carpeta Default. Usando sesion temporal.",
-        {
-          error: renameError.message,
-        }
-      );
-      sessionName = `essenza-bot-${Date.now()}`;
-      logMessage("INFO", `Usando nombre de sesion temporal: ${sessionName}`);
-    }
-  } else {
+// Verificar si Preferences está bloqueado intentando acceder a él
+let carpetaBloqueada = false;
+if (fs.existsSync(preferencesPath)) {
+  try {
+    // Intentar abrir el archivo en modo de escritura para verificar si está bloqueado
+    const fd = fs.openSync(preferencesPath, 'r+');
+    fs.closeSync(fd);
+  } catch (accessError) {
+    // Si no se puede abrir (probablemente está bloqueado por Chrome), usar carpeta temporal
+    carpetaBloqueada = true;
     logMessage(
-      "INFO",
-      "Sesión guardada encontrada. Manteniendo carpeta Default para preservar la sesión."
+      "WARNING",
+      "Carpeta Default bloqueada (probablemente por Chrome). Usando carpeta temporal para la sesión."
     );
+  }
+}
+
+// Si la carpeta está bloqueada o no se pudieron limpiar archivos, usar carpeta temporal
+if (carpetaBloqueada || (!archivosLimpiados && fs.existsSync(preferencesPath))) {
+  const timestamp = Date.now();
+  const tempSessionName = `essenza-bot-temp-${timestamp}`;
+  const tempTokensPath = path.join(__dirname, "tokens", tempSessionName);
+  
+  // Crear carpeta temporal si no existe
+  if (!fs.existsSync(tempTokensPath)) {
+    fs.mkdirSync(tempTokensPath, { recursive: true });
+  }
+  
+  sessionName = tempSessionName;
+  userDataDir = tempTokensPath;
+  
+  logMessage(
+    "INFO",
+    `Usando carpeta temporal para la sesión: ${tempSessionName}`
+  );
+  logMessage(
+    "INFO",
+    `Ruta temporal: ${tempTokensPath}`
+  );
+} else {
+  // Verificar si hay una sesión guardada válida antes de renombrar
+  // Solo renombrar si Preferences está bloqueado Y no hay archivos de sesión importantes
+  if (!archivosLimpiados && fs.existsSync(preferencesPath)) {
+    // Verificar si hay archivos de sesión importantes (como Local Storage)
+    const sessionFiles = [
+      path.join(defaultPath, "Local Storage"),
+      path.join(defaultPath, "Session Storage"),
+      path.join(defaultPath, "IndexedDB"),
+    ];
+
+    const hasSessionData = sessionFiles.some((file) => {
+      try {
+        return fs.existsSync(file) && fs.statSync(file).isDirectory();
+      } catch {
+        return false;
+      }
+    });
+
+    if (!hasSessionData) {
+      // Solo renombrar si no hay datos de sesión importantes
+      try {
+        const timestamp = Date.now();
+        const backupPath = path.join(tokensPath, `Default.backup.${timestamp}`);
+        if (fs.existsSync(defaultPath)) {
+          fs.renameSync(defaultPath, backupPath);
+          logMessage(
+            "SUCCESS",
+            `Carpeta Default renombrada (sin datos de sesión). El bot creara una nueva.`
+          );
+        }
+      } catch (renameError) {
+        // Si no se puede renombrar, usar un nombre de sesión temporal
+        logMessage(
+          "WARNING",
+          "No se pudo renombrar carpeta Default. Usando sesion temporal.",
+          {
+            error: renameError.message,
+          }
+        );
+        const timestamp = Date.now();
+        const tempSessionName = `essenza-bot-${timestamp}`;
+        const tempTokensPath = path.join(__dirname, "tokens", tempSessionName);
+        
+        if (!fs.existsSync(tempTokensPath)) {
+          fs.mkdirSync(tempTokensPath, { recursive: true });
+        }
+        
+        sessionName = tempSessionName;
+        userDataDir = tempTokensPath;
+        logMessage("INFO", `Usando nombre de sesion temporal: ${sessionName}`);
+      }
+    } else {
+      logMessage(
+        "INFO",
+        "Sesión guardada encontrada. Manteniendo carpeta Default para preservar la sesión."
+      );
+    }
   }
 }
 
@@ -1426,42 +1650,25 @@ function iniciarBot() {
       disableWelcome: true, // Deshabilitar mensaje de bienvenida
       catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
         console.clear();
-        console.log("\n" + "=".repeat(60));
-        console.log("📱 ESCANEA ESTE QR CON WHATSAPP:");
-        console.log("=".repeat(60) + "\n");
-
-        // Variables para guardar base64 y URL
-        let qrBase64 = null;
-        let qrUrl = null;
+        console.log("\n" + "=".repeat(50));
+        console.log("📱 ESCANEA ESTE QR CON WHATSAPP");
+        console.log("=".repeat(50) + "\n");
 
         try {
           // Priorizar asciiQR si está disponible (mejor para terminales)
           if (asciiQR && typeof asciiQR === "string" && asciiQR.length > 0) {
             console.log(asciiQR);
-            // Intentar obtener base64 si está disponible
-            if (
-              base64Qr &&
-              typeof base64Qr === "string" &&
-              base64Qr.length > 50
-            ) {
-              if (!base64Qr.includes("http") && !base64Qr.includes("://")) {
-                qrBase64 = base64Qr;
-              }
-            }
           }
-          // Si tenemos urlCode, intentar generar QR desde la URL
+          // Si tenemos urlCode, generar QR desde la URL
           else if (urlCode && typeof urlCode === "string") {
-            qrUrl = urlCode;
-            console.log(
-              "🔗 URL del QR (copia y pega en tu navegador si el QR no se escanea):"
-            );
-            console.log(urlCode);
-            console.log("\n📱 QR Code:\n");
             qrcode.generate(urlCode, {
               small: false,
               type: "terminal",
               errorCorrectionLevel: "M",
             });
+            if (LOG_LEVEL === 'verbose') {
+              console.log("\n🔗 URL:", urlCode);
+            }
           }
           // Si tenemos base64Qr válido
           else if (
@@ -1471,8 +1678,6 @@ function iniciarBot() {
             !base64Qr.includes("{") &&
             !base64Qr.includes("http")
           ) {
-            qrBase64 = base64Qr;
-            console.log("📱 QR Code:\n");
             qrcode.generate(base64Qr, {
               small: false,
               type: "terminal",
@@ -1485,97 +1690,34 @@ function iniciarBot() {
             typeof base64Qr === "string" &&
             (base64Qr.includes("http") || base64Qr.length > 100)
           ) {
-            // Intentar extraer URL si está en el string
             const urlMatch = base64Qr.match(/https?:\/\/[^\s]+/);
             if (urlMatch) {
-              qrUrl = urlMatch[0];
-              console.log(
-                "🔗 URL del QR (copia y pega en tu navegador si el QR no se escanea):"
-              );
-              console.log(urlMatch[0]);
-              console.log("\n📱 QR Code:\n");
               qrcode.generate(urlMatch[0], {
                 small: false,
                 type: "terminal",
                 errorCorrectionLevel: "M",
               });
-            } else {
-              // Si no hay URL pero hay base64, guardarlo
-              if (base64Qr && base64Qr.length > 50) {
-                qrBase64 = base64Qr;
+              if (LOG_LEVEL === 'verbose') {
+                console.log("\n🔗 URL:", urlMatch[0]);
               }
-              console.log("⚠️ El QR se está generando...");
-              console.log(
-                "💡 Por favor, espera unos segundos o revisa la sesión en la carpeta tokens/"
-              );
+            } else {
+              console.log("⏳ Generando QR...");
             }
           } else {
-            // Intentar guardar base64 si está disponible
-            if (
-              base64Qr &&
-              typeof base64Qr === "string" &&
-              base64Qr.length > 50
-            ) {
-              if (!base64Qr.includes("http") && !base64Qr.includes("://")) {
-                qrBase64 = base64Qr;
-              }
-            }
-            console.log("⚠️ El QR se está generando...");
-            console.log(
-              "💡 Por favor, espera unos segundos o revisa la sesión en la carpeta tokens/"
-            );
-            logMessage(
-              "WARNING",
-              "QR recibido en formato no estándar - usando sesión guardada"
-            );
+            console.log("⏳ Generando QR...");
           }
         } catch (error) {
-          console.log("⚠️ Error al mostrar QR visual.");
-          console.log(
-            "💡 El bot seguirá funcionando. Revisa la sesión guardada."
-          );
+          console.log("⚠️ Error al mostrar QR. Revisa la sesión en tokens/");
           logMessage("ERROR", "Error al generar QR visual", {
             error: error.message.substring(0, 100),
           });
         }
 
-        // Las variables qrBase64 y qrUrl ya están definidas arriba
-
-        console.log("\n" + "=".repeat(60));
-        console.log("📋 ALTERNATIVAS SI EL QR NO SE ESCANEA:");
-        console.log("=".repeat(60));
-
-        if (qrUrl) {
-          console.log("\n🔗 Opción 1 - URL directa:");
-          console.log(qrUrl);
-          console.log("   (Copia y pega esta URL en tu navegador)");
-        }
-
-        if (qrBase64) {
-          console.log("\n🖼️ Opción 2 - QR en Base64:");
-          console.log(
-            "   (Copia este código y pégalo en https://base64.guru/converter/decode/image)"
-          );
-          console.log("   O usa este comando en tu terminal:");
-          console.log(`   echo "${qrBase64}" | base64 -d > qr.png`);
-          console.log("\n📄 Base64 completo:");
-          // Mostrar el base64 en líneas más cortas para que sea más fácil copiar
-          const base64Lines = qrBase64.match(/.{1,80}/g) || [];
-          base64Lines.forEach((line) => {
-            console.log(line);
-          });
-        } else if (qrUrl) {
-          console.log(
-            "\n💡 Puedes generar un QR desde la URL usando cualquier generador online"
-          );
-          console.log("   Ejemplo: https://www.qr-code-generator.com/");
-        }
-
-        console.log("\n" + "=".repeat(60) + "\n");
-        logMessage(
-          "INFO",
-          `QR Code procesado - Intento ${attempts || 1} - Esperando escaneo`
-        );
+        console.log("\n" + "=".repeat(50));
+        console.log("💡 Esperando escaneo del QR...");
+        console.log("=".repeat(50) + "\n");
+        
+        logMessage("INFO", `QR generado - Intento ${attempts || 1}`, null);
       },
       statusFind: (statusSession, session) => {
         logMessage("INFO", `Estado de sesión: ${statusSession}`, { session });
@@ -1610,7 +1752,7 @@ function iniciarBot() {
         "--disable-renderer-backgrounding",
         "--disable-features=TranslateUI",
         "--disable-ipc-flooding-protection",
-        "--user-data-dir=" + path.join(__dirname, "tokens", "essenza-bot"),
+              "--user-data-dir=" + userDataDir,
         "--disable-file-system",
       ],
       // Usar Chromium del sistema si está disponible
@@ -1670,7 +1812,7 @@ function iniciarBot() {
                 "WARNING",
                 `Intento ${intentos + 1} fallido. Reintentando en 2 segundos...`
               );
-              setTimeout(() => limpiarArchivosBloqueados(intentos + 1), 2000);
+              setTimeout(async () => await limpiarArchivosBloqueados(intentos + 1), 2000);
             } else {
               logMessage(
                 "ERROR",
@@ -1696,7 +1838,7 @@ function iniciarBot() {
         };
 
         // Iniciar limpieza después de 1 segundo
-        setTimeout(() => limpiarArchivosBloqueados(), 1000);
+        setTimeout(async () => await limpiarArchivosBloqueados(), 1000);
         return; // No continuar con el timeout de reconexión aquí
       }
 
@@ -1704,10 +1846,12 @@ function iniciarBot() {
       setTimeout(() => {
         logMessage("INFO", "Intentando reconectar...");
         // Limpiar archivos antes de reintentar
-        limpiarArchivosBloqueados();
-        setTimeout(() => {
-          iniciarBot();
-        }, 2000);
+        (async () => {
+          await limpiarArchivosBloqueados();
+          setTimeout(() => {
+            iniciarBot();
+          }, 2000);
+        })();
       }, 10000);
     });
 }
@@ -1715,23 +1859,58 @@ function iniciarBot() {
 // ============================================
 // FUNCIÓN PRINCIPAL DEL BOT
 // ============================================
-function start(client) {
-  logMessage("SUCCESS", "✅ Bot conectado y listo para recibir mensajes");
+async function start(client) {
+  console.clear();
   console.log("\n" + "=".repeat(50));
   console.log("🌿 ESSENZA SPA BOT - ACTIVO");
+  console.log("=".repeat(50));
+  console.log("✅ Bot conectado y listo");
+  console.log("📝 Logs guardados en: logs/");
+  
+  // Inicializar base de datos SQLite
+  try {
+    await db.inicializarDB();
+    console.log("💾 Base de datos SQLite: Inicializada");
+    logMessage("SUCCESS", "Base de datos SQLite inicializada correctamente");
+  } catch (error) {
+    console.log("⚠️ Base de datos SQLite: Error");
+    logMessage("ERROR", "Error al inicializar base de datos", {
+      error: error.message
+    });
+  }
+  
+  if (openai) {
+    console.log("🤖 IA: Activada");
+  } else {
+    console.log("🤖 IA: Desactivada (sin API key)");
+  }
   console.log("=".repeat(50) + "\n");
+  
+  logMessage("SUCCESS", "Bot iniciado correctamente");
 
   // Sistema de recordatorios (cada hora)
-  setInterval(() => {
+  const intervalRecordatorios = setInterval(() => {
     verificarRecordatorios(client);
   }, 60 * 60 * 1000);
+  intervals.push(intervalRecordatorios);
+
+  // Rotación de logs (cada 24 horas)
+  const intervalRotacionLogs = setInterval(() => {
+    rotarLogs();
+  }, 24 * 60 * 60 * 1000);
+  intervals.push(intervalRotacionLogs);
+
+  // Rotar logs al iniciar
+  rotarLogs();
 
   // Verificar recordatorios al iniciar
   setTimeout(() => verificarRecordatorios(client), 5000);
 
   // Manejo de desconexión y reconexión
   client.onStateChange((state) => {
-    logMessage("INFO", `Estado del cliente cambiado: ${state}`);
+    if (LOG_LEVEL === 'verbose') {
+      logMessage("INFO", `Estado del cliente cambiado: ${state}`);
+    }
     if (state === "CLOSE" || state === "DISCONNECTED") {
       logMessage("WARNING", "Bot desconectado. Intentando reconectar...");
       setTimeout(() => {
@@ -1758,8 +1937,7 @@ function start(client) {
               "--disable-renderer-backgrounding",
               "--disable-features=TranslateUI",
               "--disable-ipc-flooding-protection",
-              "--user-data-dir=" +
-                path.join(__dirname, "tokens", "essenza-bot"),
+              "--user-data-dir=" + userDataDir,
               "--disable-file-system",
             ],
             // Usar Chromium del sistema si está disponible
@@ -1795,11 +1973,13 @@ function start(client) {
         (message.chatId && message.chatId.includes("status")) ||
         (message.from && message.from.includes("status"))
       ) {
-        logMessage("INFO", "Mensaje de estado ignorado", {
-          type: message.type,
-          from: message.from,
-          chatId: message.chatId,
-        });
+        if (LOG_LEVEL === 'verbose') {
+          logMessage("INFO", "Mensaje de estado ignorado", {
+            type: message.type,
+            from: message.from,
+            chatId: message.chatId,
+          });
+        }
         return;
       }
 
@@ -1840,11 +2020,13 @@ function start(client) {
         (message.from.endsWith("@c.us") || message.from.endsWith("@lid"));
 
       if (!esChatIndividual) {
-        logMessage("INFO", "Mensaje ignorado - no es chat individual válido", {
-          from: message.from,
-          type: message.type,
-          isStatus: message.isStatus,
-        });
+        if (LOG_LEVEL === 'verbose') {
+          logMessage("INFO", "Mensaje ignorado - no es chat individual válido", {
+            from: message.from,
+            type: message.type,
+            isStatus: message.isStatus,
+          });
+        }
         return; // Solo chats individuales (@c.us o @lid), NO grupos (@g.us) ni estados
       }
 
@@ -1858,36 +2040,17 @@ function start(client) {
         "ptt",
       ];
       if (message.type && !tiposPermitidos.includes(message.type)) {
-        logMessage("INFO", "Mensaje ignorado - tipo no permitido", {
-          type: message.type,
-          from: message.from,
-        });
+        if (LOG_LEVEL === 'verbose') {
+          logMessage("INFO", "Mensaje ignorado - tipo no permitido", {
+            type: message.type,
+            from: message.from,
+          });
+        }
         return;
       }
 
       // 10. Validación final del userId
       const userId = message.from;
-
-      // ============================================
-      // VALIDACIÓN TEMPORAL PARA PRUEBAS
-      // TODO: QUITAR ESTA VALIDACIÓN DESPUÉS DE PRUEBAS
-      // ============================================
-      if (MODO_PRUEBA) {
-        const numeroUsuario = extraerNumero(userId);
-        if (numeroUsuario !== NUMERO_PRUEBA && userId !== ADMIN_NUMBER) {
-          logMessage(
-            "INFO",
-            `Mensaje ignorado en modo prueba - Número: ${numeroUsuario}`,
-            {
-              userId: userId,
-              numero: numeroUsuario,
-              esperado: NUMERO_PRUEBA,
-            }
-          );
-          return; // Ignorar mensajes de otros números durante pruebas
-        }
-      }
-      // ============================================
 
       // Aceptar tanto @c.us como @lid (dispositivo vinculado)
       const esUserIdValido =
@@ -1905,9 +2068,13 @@ function start(client) {
       let userName =
         message.notifyName ||
         message.pushname ||
-        userNames[userId] ||
+        storage.getUserName(userId) ||
         "Usuario";
-      const text = message.body.trim();
+      // Inicializar usuario al recibir mensaje
+      inicializarUsuario(userId);
+      
+      // Sanitizar mensaje antes de procesar
+      const text = sanitizarMensaje(message.body || "");
       const textLower = text.toLowerCase();
 
       // Actualizar estadísticas
@@ -1916,26 +2083,49 @@ function start(client) {
 
       // Intentar extraer y guardar nombre
       const nombreExtraido = extractName(text);
-      if (nombreExtraido && !userNames[userId]) {
-        userNames[userId] = nombreExtraido;
+      if (nombreExtraido && !storage.getUserName(userId)) {
+        storage.setUserName(userId, nombreExtraido);
         userName = nombreExtraido;
-        logMessage("INFO", `Nombre guardado para usuario: ${userName}`);
+        if (LOG_LEVEL === 'verbose') {
+          logMessage("INFO", `Nombre guardado para usuario: ${userName}`);
+        }
       }
 
       // Usar nombre guardado si existe
-      if (userNames[userId]) {
-        userName = userNames[userId];
+      if (storage.getUserName(userId)) {
+        userName = storage.getUserName(userId);
       }
 
-      logMessage("INFO", `Mensaje recibido de ${userName}`, {
-        userId: extraerNumero(userId),
-        mensaje: text.substring(0, 50),
-      });
+      if (LOG_LEVEL === 'verbose') {
+        logMessage("INFO", `Mensaje recibido de ${userName}`, {
+          userId: extraerNumero(userId),
+          mensaje: text.substring(0, 50),
+        });
+      } else {
+        // Guardar en archivo sin mostrar en consola
+        const timestamp = new Date().toLocaleString("es-PE", {
+          dateStyle: "short",
+          timeStyle: "medium",
+        });
+        const logDir = path.join(__dirname, "logs");
+        if (!fs.existsSync(logDir)) {
+          fs.mkdirSync(logDir, { recursive: true });
+        }
+        const logFile = path.join(
+          logDir,
+          `bot-${new Date().toISOString().split("T")[0]}.log`
+        );
+        const logEntry = `[${timestamp}] [INFO] Mensaje recibido de ${userName} | ${JSON.stringify({
+          userId: extraerNumero(userId),
+          mensaje: text.substring(0, 50),
+        })}\n`;
+        fs.appendFileSync(logFile, logEntry, "utf8");
+      }
 
       // ============================================
       // COMANDOS DEL ADMINISTRADOR
       // ============================================
-      if (userId === ADMIN_NUMBER) {
+      if (esAdministrador(userId)) {
         // Comando: Estadísticas
         if (
           textLower === "estadisticas" ||
@@ -1945,14 +2135,46 @@ function start(client) {
           try {
             await enviarMensajeSeguro(
               client,
-              ADMIN_NUMBER,
+              userId,
               obtenerEstadisticas()
             );
-            logMessage("INFO", "Estadísticas enviadas al administrador");
+            if (LOG_LEVEL === 'verbose') {
+              logMessage("INFO", "Estadísticas enviadas al administrador");
+            }
           } catch (error) {
             logMessage("ERROR", "Error al enviar estadísticas", {
               error: error.message,
             });
+          }
+          return;
+        }
+
+        // Comando: Citas de hoy
+        if (
+          fuzzyMatch(textLower, "citas de hoy") ||
+          fuzzyMatch(textLower, "citas hoy") ||
+          fuzzyMatch(textLower, "reservas de hoy") ||
+          fuzzyMatch(textLower, "reservas hoy") ||
+          textLower === "citas de hoy" ||
+          textLower === "citas hoy" ||
+          textLower === "reservas de hoy" ||
+          textLower === "reservas hoy"
+        ) {
+          try {
+            const citas = await obtenerCitasDelDia();
+            await enviarMensajeSeguro(client, userId, citas);
+            if (LOG_LEVEL === 'verbose') {
+              logMessage("INFO", "Citas del día enviadas al administrador");
+            }
+          } catch (error) {
+            logMessage("ERROR", "Error al obtener citas del día", {
+              error: error.message,
+            });
+            await enviarMensajeSeguro(
+              client,
+              userId,
+              "❌ Error al obtener las citas del día. Por favor, intenta más tarde."
+            );
           }
           return;
         }
@@ -1969,7 +2191,7 @@ function start(client) {
           try {
             await enviarMensajeSeguro(
               client,
-              ADMIN_NUMBER,
+              userId,
               "✅ *IA Desactivada*\n\nLa inteligencia artificial ha sido desactivada globalmente.\n\nEl bot seguirá funcionando pero sin respuestas de IA.\n\nPara reactivarla, escribe: *Activar IA*"
             );
             logMessage(
@@ -1996,7 +2218,7 @@ function start(client) {
           try {
             await enviarMensajeSeguro(
               client,
-              ADMIN_NUMBER,
+              userId,
               "✅ *IA Activada*\n\nLa inteligencia artificial ha sido reactivada globalmente.\n\nEl bot ahora puede usar IA para responder a los usuarios."
             );
             logMessage(
@@ -2024,10 +2246,12 @@ function start(client) {
           try {
             await enviarMensajeSeguro(
               client,
-              ADMIN_NUMBER,
+              userId,
               `📊 *Estado de la IA*\n\n${estadoIA}\n\nPara cambiar el estado:\n• *Desactivar IA* - Desactiva la IA globalmente\n• *Activar IA* - Reactiva la IA globalmente`
             );
-            logMessage("INFO", "Estado de IA consultado por el administrador");
+            if (LOG_LEVEL === 'verbose') {
+              logMessage("INFO", "Estado de IA consultado por el administrador");
+            }
           } catch (error) {
             logMessage("ERROR", "Error al consultar estado de IA", {
               error: error.message,
@@ -2053,7 +2277,7 @@ function start(client) {
             let usuarioEncontrado = null;
 
             // Buscar el usuario por número
-            for (const [uid, nombre] of Object.entries(userNames)) {
+            for (const [uid, nombre] of storage.userNames.entries()) {
               const numeroUsuario = extraerNumero(uid);
               if (
                 numeroUsuario === numeroBuscado ||
@@ -2065,19 +2289,19 @@ function start(client) {
             }
 
             if (usuarioEncontrado) {
-              usuariosBotDesactivado.add(usuarioEncontrado);
-              humanModeUsers.add(usuarioEncontrado); // También agregar a modo asesor
-              if (!userData[usuarioEncontrado])
-                userData[usuarioEncontrado] = {};
-              userData[usuarioEncontrado].iaDesactivada = true;
-              userData[usuarioEncontrado].botDesactivadoPorAdmin = true;
+              storage.setBotDesactivado(usuarioEncontrado, true);
+              storage.setHumanMode(usuarioEncontrado, true); // También agregar a modo asesor
+              const userDataActual = storage.getUserData(usuarioEncontrado) || {};
+              userDataActual.iaDesactivada = true;
+              userDataActual.botDesactivadoPorAdmin = true;
+              storage.setUserData(usuarioEncontrado, userDataActual);
 
               try {
                 await enviarMensajeSeguro(
                   client,
-                  ADMIN_NUMBER,
+                  userId,
                   `✅ *Bot Desactivado*\n\nBot y IA desactivados para:\n👤 ${
-                    userNames[usuarioEncontrado] || "Usuario"
+                    storage.getUserName(usuarioEncontrado) || "Usuario"
                   }\n📱 ${extraerNumero(
                     usuarioEncontrado
                   )}\n\nSolo tú puedes responder ahora.\n\nPara reactivarlo, escribe: *Activar bot ${numeroBuscado}*`
@@ -2085,7 +2309,7 @@ function start(client) {
                 logMessage(
                   "INFO",
                   `Bot desactivado para usuario ${
-                    userNames[usuarioEncontrado]
+                    storage.getUserName(usuarioEncontrado)
                   } (${extraerNumero(usuarioEncontrado)}) por el administrador`
                 );
               } catch (error) {
@@ -2097,13 +2321,13 @@ function start(client) {
               try {
                 await enviarMensajeSeguro(
                   client,
-                  ADMIN_NUMBER,
+                  userId,
                   `❌ *Usuario no encontrado*\n\nNo se encontró un usuario con el número: ${numeroBuscado}\n\nUsuarios en modo asesor:\n${
-                    Array.from(humanModeUsers)
+                    Array.from(storage.humanModeUsers)
                       .map(
                         (uid, idx) =>
                           `${idx + 1}. ${
-                            userNames[uid] || "Usuario"
+                            storage.getUserName(uid) || "Usuario"
                           } (${extraerNumero(uid)})`
                       )
                       .join("\n") || "Ninguno"
@@ -2117,13 +2341,13 @@ function start(client) {
             }
           } else {
             // Si no hay número, mostrar lista de usuarios en modo asesor
-            const usuariosEnAsesor = Array.from(humanModeUsers);
+            const usuariosEnAsesor = Array.from(storage.humanModeUsers);
             if (usuariosEnAsesor.length > 0) {
               const listaUsuarios = usuariosEnAsesor
                 .map((uid, idx) => {
-                  const nombre = userNames[uid] || "Usuario";
+                  const nombre = storage.getUserName(uid) || "Usuario";
                   const numero = extraerNumero(uid);
-                  const estado = usuariosBotDesactivado.has(uid)
+                  const estado = storage.isBotDesactivado(uid)
                     ? "🔴 Bot desactivado"
                     : "🟢 Bot activo";
                   return `${idx + 1}. ${nombre} (${numero}) - ${estado}`;
@@ -2133,7 +2357,7 @@ function start(client) {
               try {
                 await enviarMensajeSeguro(
                   client,
-                  ADMIN_NUMBER,
+                  userId,
                   `📋 *Usuarios en modo asesor*\n\n${listaUsuarios}\n\nPara desactivar el bot para un usuario, escribe:\n*Desactivar bot [número]*\n\nEjemplo: *Desactivar bot 972002363*`
                 );
               } catch (error) {
@@ -2145,7 +2369,7 @@ function start(client) {
               try {
                 await enviarMensajeSeguro(
                   client,
-                  ADMIN_NUMBER,
+                  userId,
                   `ℹ️ *No hay usuarios en modo asesor*\n\nPara desactivar el bot para un usuario específico, escribe:\n*Desactivar bot [número]*\n\nEjemplo: *Desactivar bot 972002363*`
                 );
               } catch (error) {
@@ -2173,7 +2397,7 @@ function start(client) {
             let usuarioEncontrado = null;
 
             // Buscar el usuario por número
-            for (const [uid, nombre] of Object.entries(userNames)) {
+            for (const [uid, nombre] of storage.userNames.entries()) {
               const numeroUsuario = extraerNumero(uid);
               if (
                 numeroUsuario === numeroBuscado ||
@@ -2185,24 +2409,24 @@ function start(client) {
             }
 
             if (usuarioEncontrado) {
-              usuariosBotDesactivado.delete(usuarioEncontrado);
+              storage.setBotDesactivado(usuarioEncontrado, false);
               // Solo remover de humanModeUsers si fue agregado por el comando del admin
               // (no remover si está en modo asesor por otra razón)
-              if (userData[usuarioEncontrado]?.botDesactivadoPorAdmin) {
-                humanModeUsers.delete(usuarioEncontrado);
+              const userDataAdmin = storage.getUserData(usuarioEncontrado) || {};
+              if (userDataAdmin?.botDesactivadoPorAdmin) {
+                storage.setHumanMode(usuarioEncontrado, false);
               }
-              if (userData[usuarioEncontrado]) {
-                userData[usuarioEncontrado].botDesactivadoPorAdmin = false;
-                // Reactivar IA si fue desactivada solo por el comando del admin
-                userData[usuarioEncontrado].iaDesactivada = false;
-              }
+              userDataAdmin.botDesactivadoPorAdmin = false;
+              // Reactivar IA si fue desactivada solo por el comando del admin
+              userDataAdmin.iaDesactivada = false;
+              storage.setUserData(usuarioEncontrado, userDataAdmin);
 
               try {
                 await enviarMensajeSeguro(
                   client,
-                  ADMIN_NUMBER,
+                  userId,
                   `✅ *Bot Reactivado*\n\nBot y IA reactivados para:\n👤 ${
-                    userNames[usuarioEncontrado] || "Usuario"
+                    storage.getUserName(usuarioEncontrado) || "Usuario"
                   }\n📱 ${extraerNumero(
                     usuarioEncontrado
                   )}\n\nEl bot ahora puede responder automáticamente.`
@@ -2210,7 +2434,7 @@ function start(client) {
                 logMessage(
                   "INFO",
                   `Bot reactivado para usuario ${
-                    userNames[usuarioEncontrado]
+                    storage.getUserName(usuarioEncontrado)
                   } (${extraerNumero(usuarioEncontrado)}) por el administrador`
                 );
               } catch (error) {
@@ -2222,7 +2446,7 @@ function start(client) {
               try {
                 await enviarMensajeSeguro(
                   client,
-                  ADMIN_NUMBER,
+                  userId,
                   `❌ *Usuario no encontrado*\n\nNo se encontró un usuario con el número: ${numeroBuscado}`
                 );
               } catch (error) {
@@ -2235,7 +2459,7 @@ function start(client) {
             try {
               await enviarMensajeSeguro(
                 client,
-                ADMIN_NUMBER,
+                userId,
                 `ℹ️ *Activar Bot*\n\nPara reactivar el bot para un usuario específico, escribe:\n*Activar bot [número]*\n\nEjemplo: *Activar bot 972002363*`
               );
             } catch (error) {
@@ -2253,7 +2477,7 @@ function start(client) {
       // ============================================
       // Cuando el admin envía un mensaje y hay usuarios en modo asesor,
       // recordarle cómo salir del modo asesor
-      if (userId === ADMIN_NUMBER && humanModeUsers.size > 0) {
+      if (esAdministrador(userId) && storage.humanModeUsers.size > 0) {
         // Solo enviar recordatorio si no es un comando conocido
         const esComando =
           textLower === "estadisticas" ||
@@ -2267,17 +2491,17 @@ function start(client) {
 
         if (!esComando) {
           try {
-            const usuariosEnAsesor = Array.from(humanModeUsers);
+            const usuariosEnAsesor = Array.from(storage.humanModeUsers);
             const listaUsuarios = usuariosEnAsesor
               .map((uid, idx) => {
-                const nombre = userNames[uid] || "Usuario";
+                const nombre = storage.getUserName(uid) || "Usuario";
                 return `${idx + 1}. ${nombre} (${extraerNumero(uid)})`;
               })
               .join("\n");
 
             await enviarMensajeSeguro(
               client,
-              ADMIN_NUMBER,
+              userId,
               `⚠️ *Recordatorio*\n\n` +
                 `Hay ${usuariosEnAsesor.length} usuario(s) en modo asesor.\n\n` +
                 `No olvide que para salir del modo asesor, los usuarios deben escribir *Bot*.\n\n` +
@@ -2300,8 +2524,9 @@ function start(client) {
       // ============================================
       const saludo = detectSaludo(textLower);
       const ahora = new Date();
-      const ultimaInteraccion = userData[userId]?.ultimaInteraccion
-        ? new Date(userData[userId].ultimaInteraccion)
+      const userDataActual = storage.getUserData(userId) || {};
+      const ultimaInteraccion = userDataActual?.ultimaInteraccion
+        ? new Date(userDataActual.ultimaInteraccion)
         : null;
 
       // Tiempo mínimo entre saludos: 1 hora (3600000 ms)
@@ -2311,24 +2536,25 @@ function start(client) {
         : Infinity; // Si no hay última interacción, es infinito (primera vez)
 
       // Actualizar última interacción
-      if (!userData[userId]) userData[userId] = {};
-      userData[userId].ultimaInteraccion = ahora.toISOString();
+      userDataActual.ultimaInteraccion = ahora.toISOString();
+      storage.setUserData(userId, userDataActual);
 
       if (saludo) {
         // Si es "hola" y ha pasado suficiente tiempo O es la primera vez
         if (saludo === "hola") {
           const puedeSaludar =
-            !userData[userId]?.saludoEnviado ||
+            !userDataActual?.saludoEnviado ||
             tiempoDesdeUltimaInteraccion >= tiempoMinimoEntreSaludos;
 
           if (puedeSaludar) {
             // Marcar que ya se envió un saludo
-            userData[userId].saludoEnviado = true;
-            userData[userId].bienvenidaEnviada = true;
+            userDataActual.saludoEnviado = true;
+            userDataActual.bienvenidaEnviada = true;
+            storage.setUserData(userId, userDataActual);
 
             // Establecer estado
-            if (!userState[userId]) {
-              userState[userId] = "conversacion";
+            if (!storage.getUserState(userId)) {
+              storage.setUserState(userId, "conversacion");
             }
 
             const saludoHora = getSaludoPorHora();
@@ -2388,11 +2614,12 @@ function start(client) {
         } else {
           // Otros saludos (buenos días, buenas tardes, etc.)
           const puedeSaludar =
-            !userData[userId]?.saludoEnviado ||
+            !userDataActual?.saludoEnviado ||
             tiempoDesdeUltimaInteraccion >= tiempoMinimoEntreSaludos;
 
           if (puedeSaludar) {
-            userData[userId].saludoEnviado = true;
+            userDataActual.saludoEnviado = true;
+            storage.setUserData(userId, userDataActual);
             const saludoHora = getSaludoPorHora();
             const respuesta = `${getSaludoPorHora()}! ${getRespuestaVariada(
               saludo
@@ -2410,13 +2637,99 @@ function start(client) {
       }
 
       // ============================================
+      // CONSULTA DE DISPONIBILIDAD
+      // ============================================
+      const palabrasDisponibilidad = [
+        "disponibilidad",
+        "horarios disponibles",
+        "horarios libres",
+        "que horas hay",
+        "que horarios hay",
+        "disponible",
+        "libre",
+        "consultar disponibilidad",
+        "ver disponibilidad"
+      ];
+      
+      if (palabrasDisponibilidad.some(palabra => textLower.includes(palabra))) {
+        try {
+          // Intentar extraer fecha del mensaje
+          let fechaConsulta = new Date();
+          
+          // Buscar referencias a días (hoy, mañana, pasado mañana, etc.)
+          if (textLower.includes("hoy") || textLower.includes("ahora")) {
+            fechaConsulta = new Date();
+          } else if (textLower.includes("mañana") || textLower.includes("manana")) {
+            fechaConsulta = new Date();
+            fechaConsulta.setDate(fechaConsulta.getDate() + 1);
+          } else if (textLower.includes("pasado mañana") || textLower.includes("pasado manana")) {
+            fechaConsulta = new Date();
+            fechaConsulta.setDate(fechaConsulta.getDate() + 2);
+          } else {
+            // Intentar extraer fecha del texto (formato: DD/MM, DD-MM, etc.)
+            const fechaMatch = text.match(/(\d{1,2})[\/\-](\d{1,2})/);
+            if (fechaMatch) {
+              const dia = parseInt(fechaMatch[1]);
+              const mes = parseInt(fechaMatch[2]) - 1; // Mes es 0-indexed
+              const año = new Date().getFullYear();
+              fechaConsulta = new Date(año, mes, dia);
+            }
+          }
+          
+          // Asegurar que la fecha sea válida y en el futuro
+          if (isNaN(fechaConsulta.getTime()) || fechaConsulta < new Date()) {
+            fechaConsulta = new Date();
+            if (fechaConsulta.getHours() >= 19) {
+              // Si ya pasó el horario de cierre, consultar para mañana
+              fechaConsulta.setDate(fechaConsulta.getDate() + 1);
+            }
+          }
+          
+          // Consultar disponibilidad
+          const horariosDisponibles = await consultarDisponibilidad(fechaConsulta, 60);
+          const mensajeDisponibilidad = formatearHorariosDisponibles(horariosDisponibles);
+          
+          const fechaFormateada = fechaConsulta.toLocaleDateString("es-PE", {
+            weekday: "long",
+            year: "numeric",
+            month: "long",
+            day: "numeric"
+          });
+          
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            `📅 *Disponibilidad para ${fechaFormateada}*\n\n${mensajeDisponibilidad}`
+          );
+          
+          logMessage("INFO", `Consulta de disponibilidad realizada por ${userName}`, {
+            fecha: fechaConsulta.toISOString(),
+            horariosDisponibles: horariosDisponibles.length
+          });
+          
+          return;
+        } catch (error) {
+          logMessage("ERROR", "Error al consultar disponibilidad", {
+            error: error.message
+          });
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            "❌ Lo siento, hubo un error al consultar la disponibilidad. Por favor intenta más tarde."
+          );
+          return;
+        }
+      }
+
+      // ============================================
       // SI ESTÁ EN MODO RESERVA, verificar cancelación y tiempo PRIMERO
       // (antes de la verificación general de humanModeUsers)
       // ============================================
-      if (userState[userId] === "reserva") {
+      if (storage.getUserState(userId) === "reserva") {
         // Verificar si ha pasado suficiente tiempo desde que se activó el modo reserva
-        const modoReservaDesde = userData[userId]?.modoReservaDesde
-          ? new Date(userData[userId].modoReservaDesde)
+        const userDataReserva = storage.getUserData(userId) || {};
+        const modoReservaDesde = userDataReserva?.modoReservaDesde
+          ? new Date(userDataReserva.modoReservaDesde)
           : null;
         const ahora = new Date();
         const tiempoMinimoDesactivacion = 24 * 60 * 60 * 1000; // 24 horas (1 día) en milisegundos
@@ -2429,12 +2742,11 @@ function start(client) {
           modoReservaDesde &&
           tiempoTranscurrido >= tiempoMinimoDesactivacion
         ) {
-          userState[userId] = null;
-          humanModeUsers.delete(userId);
-          if (userData[userId]) {
-            userData[userId].iaDesactivada = false;
-            delete userData[userId].modoReservaDesde;
-          }
+          storage.setUserState(userId, null);
+          storage.setHumanMode(userId, false);
+          userDataReserva.iaDesactivada = false;
+          delete userDataReserva.modoReservaDesde;
+          storage.setUserData(userId, userDataReserva);
           logMessage(
             "INFO",
             `Modo reserva expirado para ${userName} - IA reactivada automáticamente después de ${Math.round(
@@ -2449,12 +2761,12 @@ function start(client) {
             fuzzyMatch(textLower, "volver") ||
             fuzzyMatch(textLower, "no quiero reservar")
           ) {
-            userState[userId] = null;
-            humanModeUsers.delete(userId);
-            if (userData[userId]) {
-              userData[userId].iaDesactivada = false;
-              delete userData[userId].modoReservaDesde;
-            }
+            storage.setUserState(userId, null);
+            storage.setHumanMode(userId, false);
+            const userDataReserva = storage.getUserData(userId) || {};
+            userDataReserva.iaDesactivada = false;
+            delete userDataReserva.modoReservaDesde;
+            storage.setUserData(userId, userDataReserva);
             logMessage(
               "INFO",
               `Usuario ${userName} canceló el proceso de reserva`
@@ -2492,10 +2804,11 @@ function start(client) {
       // ============================================
       // SALIDA DEL MODO ASESOR (solo si está activo y NO en reserva)
       // ============================================
-      if (humanModeUsers.has(userId)) {
+      if (storage.isHumanMode(userId)) {
         // Verificar si ha pasado suficiente tiempo desde que se activó el modo asesor
-        const modoAsesorDesde = userData[userId]?.modoAsesorDesde
-          ? new Date(userData[userId].modoAsesorDesde)
+        const userDataAsesor = storage.getUserData(userId) || {};
+        const modoAsesorDesde = userDataAsesor?.modoAsesorDesde
+          ? new Date(userDataAsesor.modoAsesorDesde)
           : null;
         const ahora = new Date();
         const tiempoMinimoDesactivacion = 3 * 60 * 60 * 1000; // 3 horas en milisegundos
@@ -2508,12 +2821,11 @@ function start(client) {
           modoAsesorDesde &&
           tiempoTranscurrido >= tiempoMinimoDesactivacion
         ) {
-          humanModeUsers.delete(userId);
-          if (userData[userId]) {
-            userData[userId].iaDesactivada = false;
-            delete userData[userId].modoAsesorDesde;
-          }
-          userState[userId] = null; // Limpiar estado
+          storage.setHumanMode(userId, false);
+          userDataAsesor.iaDesactivada = false;
+          delete userDataAsesor.modoAsesorDesde;
+          storage.setUserData(userId, userDataAsesor);
+          storage.setUserState(userId, null); // Limpiar estado
           logMessage(
             "INFO",
             `Modo asesor expirado para ${userName} - IA reactivada automáticamente después de ${Math.round(
@@ -2529,12 +2841,14 @@ function start(client) {
             fuzzyMatch(textLower, "ia") ||
             fuzzyMatch(textLower, "inteligencia artificial")
           ) {
-            humanModeUsers.delete(userId);
-            if (userData[userId]) {
-              userData[userId].iaDesactivada = false;
-              delete userData[userId].modoAsesorDesde;
-            }
-            userState[userId] = null; // Limpiar estado
+            storage.setHumanMode(userId, false);
+            const userDataSalir = storage.getUserData(userId) || {};
+            userDataSalir.iaDesactivada = false;
+            delete userDataSalir.modoAsesorDesde;
+            storage.setUserData(userId, userDataSalir);
+            storage.setUserState(userId, null); // Limpiar estado
+            // Limpiar historial al salir del modo asesor para empezar conversación fresca
+            storage.setHistorial(userId, []);
             try {
               await enviarMensajeSeguro(
                 client,
@@ -2587,14 +2901,15 @@ function start(client) {
       ];
 
       if (palabrasAsesor.some((palabra) => textLower.includes(palabra))) {
-        humanModeUsers.add(userId);
+        storage.setHumanMode(userId, true);
         estadisticas.asesoresActivados++;
-        userState[userId] = "asesor";
+        storage.setUserState(userId, "asesor");
 
         // Guardar timestamp de cuando se activó el modo asesor
-        if (!userData[userId]) userData[userId] = {};
-        userData[userId].modoAsesorDesde = new Date().toISOString();
-        userData[userId].iaDesactivada = true; // Marcar que la IA está desactivada
+        const userDataNuevoAsesor = storage.getUserData(userId) || {};
+        userDataNuevoAsesor.modoAsesorDesde = new Date().toISOString();
+        userDataNuevoAsesor.iaDesactivada = true; // Marcar que la IA está desactivada
+        storage.setUserData(userId, userDataNuevoAsesor);
 
         logMessage(
           "INFO",
@@ -2648,7 +2963,6 @@ function start(client) {
             `Error al notificar al administrador (no crítico)`,
             {
               error: error.message,
-              userId: ADMIN_NUMBER,
             }
           );
         }
@@ -2656,7 +2970,7 @@ function start(client) {
       }
 
       // Verificar si el bot está desactivado para este usuario por el admin
-      if (usuariosBotDesactivado.has(userId)) {
+      if (storage.isBotDesactivado(userId)) {
         logMessage(
           "INFO",
           `Usuario ${userName} tiene bot desactivado por admin - Bot no responde`
@@ -2664,7 +2978,7 @@ function start(client) {
         return; // El admin maneja este chat completamente
       }
 
-      if (humanModeUsers.has(userId)) {
+      if (storage.isHumanMode(userId)) {
         logMessage(
           "INFO",
           `Usuario ${userName} está en modo asesor - Bot no responde`
@@ -2677,17 +2991,18 @@ function start(client) {
       // ============================================
       if (
         detectarIntencionReserva(textLower) &&
-        userState[userId] !== "reserva"
+        storage.getUserState(userId) !== "reserva"
       ) {
         // Activar flujo de reserva
-        userState[userId] = "reserva";
-        humanModeUsers.add(userId);
+        storage.setUserState(userId, "reserva");
+        storage.setHumanMode(userId, true);
         estadisticas.reservasSolicitadas++;
 
         // Guardar timestamp de cuando se activó el modo reserva
-        if (!userData[userId]) userData[userId] = {};
-        userData[userId].modoReservaDesde = new Date().toISOString();
-        userData[userId].iaDesactivada = true; // Marcar que la IA está desactivada
+        const userDataNuevaReserva = storage.getUserData(userId) || {};
+        userDataNuevaReserva.modoReservaDesde = new Date().toISOString();
+        userDataNuevaReserva.iaDesactivada = true; // Marcar que la IA está desactivada
+        storage.setUserData(userId, userDataNuevaReserva);
 
         logMessage(
           "INFO",
@@ -2727,16 +3042,23 @@ function start(client) {
           });
         }
 
-        // Enviar notificación al admin (separado, no crítico si falla)
+        // Enviar notificación a todos los administradores (separado, no crítico si falla)
         try {
-          await enviarMensajeSeguro(
-            client,
-            ADMIN_NUMBER,
-            `🔔 *NUEVA SOLICITUD DE RESERVA*\n\n` +
-              `Usuario: ${userName}\n` +
-              `Número: ${extraerNumero(userId)}\n\n` +
-              `Por favor contacta al cliente para confirmar los detalles.`
-          );
+          const mensajeNotificacion = `🔔 *NUEVA SOLICITUD DE RESERVA*\n\n` +
+            `Usuario: ${userName}\n` +
+            `Número: ${extraerNumero(userId)}\n\n` +
+            `Por favor contacta al cliente para confirmar los detalles.`;
+          
+          // Enviar a todos los administradores
+          for (const adminId of ADMIN_NUMBERS) {
+            try {
+              await enviarMensajeSeguro(client, adminId, mensajeNotificacion);
+            } catch (error) {
+              logMessage("WARNING", `Error al notificar a administrador ${extraerNumero(adminId)}`, {
+                error: error.message
+              });
+            }
+          }
           logMessage(
             "SUCCESS",
             `Notificación de reserva enviada al administrador`
@@ -2748,7 +3070,6 @@ function start(client) {
             `Error al notificar al administrador (no crítico)`,
             {
               error: error.message,
-              userId: ADMIN_NUMBER,
             }
           );
         }
@@ -2764,13 +3085,16 @@ function start(client) {
       const tiempoMinimoParaBienvenida = 60 * 60 * 1000; // 1 hora
 
       if (
-        !userState[userId] &&
-        !userData[userId]?.bienvenidaEnviada &&
+        !storage.getUserState(userId) &&
+        !userDataActual?.bienvenidaEnviada &&
         !saludo &&
         tiempoDesdeUltimaInteraccionBienvenida >= tiempoMinimoParaBienvenida
       ) {
-        userData[userId].bienvenidaEnviada = true;
-        userData[userId].saludoEnviado = true; // Marcar también saludo para evitar duplicados
+        // Inicializar usuario si no existe
+        inicializarUsuario(userId);
+        userDataActual.bienvenidaEnviada = true;
+        userDataActual.saludoEnviado = true; // Marcar también saludo para evitar duplicados
+        storage.setUserData(userId, userDataActual);
         logMessage(
           "INFO",
           `Nuevo usuario detectado o usuario que regresa después de tiempo: ${userName}`
@@ -2820,9 +3144,10 @@ function start(client) {
 
       // Intentar usar IA primero (solo si no está en modo reserva o asesor)
       // También verificar que la IA no esté desactivada por tiempo o globalmente
-      const iaDesactivadaUsuario = userData[userId]?.iaDesactivada === true;
-      const estaEnReserva = userState[userId] === "reserva";
-      const estaEnAsesor = humanModeUsers.has(userId);
+      const userDataIA = storage.getUserData(userId) || {};
+      const iaDesactivadaUsuario = userDataIA?.iaDesactivada === true;
+      const estaEnReserva = storage.getUserState(userId) === "reserva";
+      const estaEnAsesor = storage.isHumanMode(userId);
       const puedeUsarIA =
         !estaEnReserva &&
         !estaEnAsesor &&
@@ -2830,10 +3155,19 @@ function start(client) {
         !iaGlobalDesactivada; // Verificar también desactivación global
 
       if (puedeUsarIA) {
+        // Inicializar usuario si no existe (incluye historial)
+        inicializarUsuario(userId);
+
+        // Obtener historial reciente limitado por tokens (no solo cantidad)
+        const historialCompleto = storage.getHistorial(userId);
+        const historial = limitarHistorialPorTokens(historialCompleto, 2000);
+
+        const userDataIA = storage.getUserData(userId) || {};
         const contextoUsuario = {
-          estado: userState[userId] || "conversacion",
+          estado: storage.getUserState(userId) || "conversacion",
           nombre: userName,
-          yaSaludo: userData[userId]?.saludoEnviado || false,
+          yaSaludo: userDataIA?.saludoEnviado || false,
+          historial: historial, // Incluir historial en el contexto
         };
 
         const respuestaIA = await consultarIA(text, contextoUsuario);
@@ -2841,7 +3175,7 @@ function start(client) {
         if (respuestaIA) {
           // Si ya se saludó antes, limpiar saludos de la respuesta de la IA
           let respuestaFinal = respuestaIA;
-          if (userData[userId]?.saludoEnviado) {
+          if (userDataIA?.saludoEnviado) {
             // Eliminar saludos comunes del inicio de la respuesta
             respuestaFinal = respuestaIA
               .replace(/^(Hola,?\s*[^.!?]*[.!?]\s*)/i, "")
@@ -2857,15 +3191,35 @@ function start(client) {
             }
           }
 
+          // Inicializar usuario si no existe
+          inicializarUsuario(userId);
+          
+          // Guardar mensajes en el historial ANTES de enviar
+          const historialActual = storage.getHistorial(userId);
+          historialActual.push({
+            role: "user",
+            content: text,
+          });
+          historialActual.push({
+            role: "assistant",
+            content: respuestaFinal,
+          });
+
+          // Limitar historial por tokens (no solo cantidad)
+          const historialLimitado = limitarHistorialPorTokens(historialActual, 2000);
+          storage.setHistorial(userId, historialLimitado);
+
           // Si la IA respondió, usar su respuesta
           await enviarMensajeSeguro(client, userId, respuestaFinal);
           logMessage("SUCCESS", `Respuesta de IA enviada a ${userName}`);
           return; // Importante: hacer return para no continuar
         }
-      } else if (iaDesactivada) {
-        // Si la IA está desactivada, no responder nada (el asesor maneja)
-        const motivo = estaEnReserva ? "modo reserva" : "modo asesor";
-        logMessage("INFO", `IA desactivada para ${userName} - En ${motivo}`);
+      } else {
+        // Si la IA está desactivada o no puede usarse, no responder nada (el asesor maneja)
+        const motivo = estaEnReserva ? "modo reserva" : estaEnAsesor ? "modo asesor" : "IA desactivada";
+        if (LOG_LEVEL === 'verbose') {
+          logMessage("INFO", `IA desactivada para ${userName} - En ${motivo}`);
+        }
         return;
       }
 
@@ -2884,9 +3238,9 @@ function start(client) {
   });
 
   // Reactivación automática del modo bot
-  setInterval(() => {
-    const clearedCount = humanModeUsers.size;
-    humanModeUsers.clear();
+  const intervalReactivacion = setInterval(() => {
+    const clearedCount = storage.humanModeUsers.size;
+    storage.clearHumanMode();
     if (clearedCount > 0) {
       logMessage(
         "INFO",
@@ -2894,9 +3248,79 @@ function start(client) {
       );
     }
   }, 10 * 60 * 1000);
+  intervals.push(intervalReactivacion);
 
   logMessage(
     "INFO",
     "Sistema de reactivación automática activado (cada 10 minutos)"
   );
+
+  // Guardar estado periódicamente (cada 5 minutos)
+  const intervalPersistencia = setInterval(() => {
+    try {
+      const userDataPlain = {};
+      for (const [userId, data] of storage.userData.entries()) {
+        userDataPlain[userId] = data;
+      }
+      persistence.guardarReservas(storage.getReservas());
+      persistence.guardarUserData(userDataPlain);
+      persistence.guardarEstadisticas(estadisticas);
+      if (LOG_LEVEL === 'verbose') {
+        logMessage("INFO", "Estado guardado automáticamente");
+      }
+    } catch (error) {
+      logMessage("WARNING", "Error al guardar estado automáticamente", {
+        error: error.message
+      });
+    }
+  }, 5 * 60 * 1000); // Cada 5 minutos
+  intervals.push(intervalPersistencia);
+
+  // Limpiar intervalos y guardar estado al salir
+  process.on('SIGINT', () => {
+    logMessage("INFO", "Limpiando intervalos y guardando estado antes de salir...");
+    intervals.forEach(id => clearInterval(id));
+    
+    // Guardar estado final
+    try {
+      const userDataPlain = {};
+      for (const [userId, data] of storage.userData.entries()) {
+        userDataPlain[userId] = data;
+      }
+      persistence.guardarReservas(storage.getReservas());
+      persistence.guardarUserData(userDataPlain);
+      persistence.guardarEstadisticas(estadisticas);
+      logMessage("INFO", "Estado guardado exitosamente");
+    } catch (error) {
+      logMessage("WARNING", "Error al guardar estado al salir", {
+        error: error.message
+      });
+    }
+    
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', () => {
+    logMessage("INFO", "Limpiando intervalos y guardando estado antes de salir...");
+    intervals.forEach(id => clearInterval(id));
+    
+    // Guardar estado final
+    try {
+      const userDataPlain = {};
+      for (const [userId, data] of storage.userData.entries()) {
+        userDataPlain[userId] = data;
+      }
+      persistence.guardarReservas(storage.getReservas());
+      persistence.guardarUserData(userDataPlain);
+      persistence.guardarEstadisticas(estadisticas);
+      logMessage("INFO", "Estado guardado exitosamente");
+    } catch (error) {
+      logMessage("WARNING", "Error al guardar estado al salir", {
+        error: error.message
+      });
+    }
+    
+    process.exit(0);
+  });
 }
+
