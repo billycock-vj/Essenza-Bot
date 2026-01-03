@@ -1662,7 +1662,9 @@ function inicializarServidorQR() {
 
   try {
     qrServer = http.createServer((req, res) => {
-      if (req.url === '/qr' || req.url === '/') {
+      // Asegurar que siempre respondamos, incluso si hay errores
+      try {
+        if (req.url === '/qr' || req.url === '/') {
         // Si hay un QR disponible, mostrarlo
         if (currentQRData) {
           const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(currentQRData)}`;
@@ -1790,12 +1792,23 @@ function inicializarServidorQR() {
           `);
         }
       } else if (req.url === '/health') {
-        // Health check endpoint para Railway
+        // Health check endpoint para Railway - CRÍTICO
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok', qrAvailable: !!currentQRData }));
       } else {
         res.writeHead(404);
         res.end('Not found');
+      }
+      } catch (reqError) {
+        // Si hay un error procesando la petición, responder con error 500
+        console.error("Error procesando petición:", reqError);
+        try {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Internal Server Error');
+        } catch (resError) {
+          // Si no podemos responder, cerrar la conexión
+          res.destroy();
+        }
       }
     });
 
@@ -1849,12 +1862,37 @@ function inicializarServidorQR() {
   }
 }
 
-// Inicializar servidor QR INMEDIATAMENTE (Railway necesita que responda de inmediato)
-inicializarServidorQR();
+// ============================================
+// INICIALIZAR SERVIDOR HTTP INMEDIATAMENTE
+// ============================================
+// CRÍTICO: El servidor debe iniciarse ANTES que cualquier otra cosa
+// Railway necesita que responda de inmediato para health checks
+try {
+  inicializarServidorQR();
+  console.log("✅ Servidor HTTP inicializado");
+} catch (error) {
+  console.error("❌ ERROR CRÍTICO: No se pudo inicializar el servidor HTTP");
+  console.error(error);
+  // Intentar de nuevo después de un momento
+  setTimeout(() => {
+    try {
+      inicializarServidorQR();
+      console.log("✅ Servidor HTTP inicializado (segundo intento)");
+    } catch (retryError) {
+      console.error("❌ ERROR: Falló el segundo intento de inicializar el servidor");
+      console.error(retryError);
+    }
+  }, 1000);
+}
 
 // Esperar un momento para que los archivos se liberen antes de iniciar el bot
 setTimeout(() => {
-  iniciarBot();
+  try {
+    iniciarBot();
+  } catch (error) {
+    console.error("❌ ERROR al iniciar el bot:", error);
+    logMessage("ERROR", "Error al iniciar bot", { error: error.message });
+  }
 }, 2000);
 
 function iniciarBot() {
