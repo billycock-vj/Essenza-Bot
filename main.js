@@ -1,6 +1,7 @@
 require("dotenv").config();
 const wppconnect = require("@wppconnect-team/wppconnect");
 const qrcode = require("qrcode-terminal");
+const http = require('http');
 const fs = require("fs");
 const path = require("path");
 const OpenAI = require("openai");
@@ -1648,63 +1649,158 @@ function iniciarBot() {
       session: sessionName,
       autoClose: false, // Mantener la sesión abierta
       disableWelcome: true, // Deshabilitar mensaje de bienvenida
-      catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
+      catchQR: async (base64Qr, asciiQR, attempts, urlCode) => {
         console.clear();
         console.log("\n" + "=".repeat(50));
         console.log("📱 ESCANEA ESTE QR CON WHATSAPP");
         console.log("=".repeat(50) + "\n");
 
+        let qrData = null;
+        let qrUrl = null;
+
         try {
-          // Priorizar asciiQR si está disponible (mejor para terminales)
-          if (asciiQR && typeof asciiQR === "string" && asciiQR.length > 0) {
-            console.log(asciiQR);
-          }
-          // Si tenemos urlCode, generar QR desde la URL
-          else if (urlCode && typeof urlCode === "string") {
-            qrcode.generate(urlCode, {
-              small: false,
-              type: "terminal",
-              errorCorrectionLevel: "M",
-            });
-            if (LOG_LEVEL === 'verbose') {
-              console.log("\n🔗 URL:", urlCode);
-            }
-          }
-          // Si tenemos base64Qr válido
-          else if (
-            base64Qr &&
-            typeof base64Qr === "string" &&
-            base64Qr.length < 1000 &&
-            !base64Qr.includes("{") &&
-            !base64Qr.includes("http")
-          ) {
-            qrcode.generate(base64Qr, {
-              small: false,
-              type: "terminal",
-              errorCorrectionLevel: "M",
-            });
-          }
-          // Si tenemos una URL en base64Qr
-          else if (
+          // Determinar qué datos usar para el QR
+          if (urlCode && typeof urlCode === "string") {
+            qrData = urlCode;
+            qrUrl = urlCode;
+          } else if (
             base64Qr &&
             typeof base64Qr === "string" &&
             (base64Qr.includes("http") || base64Qr.length > 100)
           ) {
             const urlMatch = base64Qr.match(/https?:\/\/[^\s]+/);
             if (urlMatch) {
-              qrcode.generate(urlMatch[0], {
-                small: false,
-                type: "terminal",
-                errorCorrectionLevel: "M",
-              });
-              if (LOG_LEVEL === 'verbose') {
-                console.log("\n🔗 URL:", urlMatch[0]);
-              }
+              qrData = urlMatch[0];
+              qrUrl = urlMatch[0];
             } else {
-              console.log("⏳ Generando QR...");
+              qrData = base64Qr;
             }
-          } else {
-            console.log("⏳ Generando QR...");
+          } else if (
+            base64Qr &&
+            typeof base64Qr === "string" &&
+            base64Qr.length < 1000 &&
+            !base64Qr.includes("{") &&
+            !base64Qr.includes("http")
+          ) {
+            qrData = base64Qr;
+          }
+
+          // Mostrar QR en consola (ASCII)
+          if (asciiQR && typeof asciiQR === "string" && asciiQR.length > 0) {
+            console.log(asciiQR);
+          } else if (qrData) {
+            qrcode.generate(qrData, {
+              small: false,
+              type: "terminal",
+              errorCorrectionLevel: "M",
+            });
+          }
+
+          // Generar URL del QR usando API de QR Server para Railway
+          if (qrData) {
+            try {
+              // Usar API de QR Server para generar el QR
+              const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(qrData)}`;
+              
+              console.log("\n" + "=".repeat(50));
+              console.log("✅ QR CODE GENERADO");
+              console.log("=".repeat(50));
+              
+              // Crear servidor HTTP simple para servir el QR
+              const port = process.env.PORT || 3000;
+              if (port && port !== '0') {
+                try {
+                  const server = http.createServer((req, res) => {
+                    if (req.url === '/qr' || req.url === '/') {
+                      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+                      res.end(`
+                        <!DOCTYPE html>
+                        <html>
+                        <head>
+                          <title>QR Code - Essenza Bot</title>
+                          <meta charset="utf-8">
+                          <meta name="viewport" content="width=device-width, initial-scale=1">
+                          <style>
+                            body {
+                              font-family: Arial, sans-serif;
+                              display: flex;
+                              flex-direction: column;
+                              align-items: center;
+                              justify-content: center;
+                              min-height: 100vh;
+                              margin: 0;
+                              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                              color: white;
+                            }
+                            .container {
+                              text-align: center;
+                              background: rgba(255,255,255,0.1);
+                              padding: 30px;
+                              border-radius: 20px;
+                              backdrop-filter: blur(10px);
+                              max-width: 600px;
+                            }
+                            h1 { margin-top: 0; }
+                            img {
+                              max-width: 500px;
+                              width: 100%;
+                              border: 5px solid white;
+                              border-radius: 10px;
+                              box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+                            }
+                            .url {
+                              margin-top: 20px;
+                              padding: 15px;
+                              background: rgba(255,255,255,0.2);
+                              border-radius: 10px;
+                              word-break: break-all;
+                            }
+                            a {
+                              color: #fff;
+                              text-decoration: underline;
+                            }
+                          </style>
+                        </head>
+                        <body>
+                          <div class="container">
+                            <h1>📱 Escanea este QR con WhatsApp</h1>
+                            <img src="${qrApiUrl}" alt="QR Code">
+                            ${qrUrl ? `<div class="url"><strong>URL:</strong><br><a href="${qrUrl}">${qrUrl}</a></div>` : ''}
+                            <p style="margin-top: 20px;">Escanea el código QR con WhatsApp para conectar el bot</p>
+                          </div>
+                        </body>
+                        </html>
+                      `);
+                    } else {
+                      res.writeHead(404);
+                      res.end('Not found');
+                    }
+                  });
+
+                  server.listen(port, '0.0.0.0', () => {
+                    const railwayUrl = process.env.RAILWAY_PUBLIC_DOMAIN 
+                      ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+                      : `http://localhost:${port}`;
+                    console.log(`\n🌐 SERVIDOR QR INICIADO`);
+                    console.log(`🔗 Abre en tu navegador: ${railwayUrl}/qr`);
+                    console.log(`   O visita: ${railwayUrl}/`);
+                    console.log("=".repeat(50) + "\n");
+                    logMessage("INFO", `Servidor QR iniciado en puerto ${port}`, { url: railwayUrl });
+                  });
+
+                  server.on('error', (err) => {
+                    if (err.code !== 'EADDRINUSE') {
+                      logMessage("WARNING", "No se pudo iniciar servidor QR", { error: err.message });
+                    }
+                  });
+                } catch (serverError) {
+                  logMessage("WARNING", "No se pudo iniciar servidor QR", { error: serverError.message });
+                }
+              }
+
+            } catch (qrError) {
+              logMessage("WARNING", "No se pudo generar QR", { error: qrError.message });
+            }
           }
         } catch (error) {
           console.log("⚠️ Error al mostrar QR. Revisa la sesión en tokens/");
