@@ -17,12 +17,11 @@ function inicializarServidorQR() {
   const port = process.env.PORT || 3000;
   
   if (!port || port === '0') {
-    console.error("⚠️ ERROR: Puerto no configurado");
+    // Error se logueará después de cargar módulos
     return;
   }
 
   if (qrServer) {
-    console.log("✅ Servidor QR ya está activo");
     return;
   }
 
@@ -192,38 +191,36 @@ function inicializarServidorQR() {
         ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
         : null;
       
-      console.log(`\n${"=".repeat(60)}`);
-      console.log(`🌐 SERVIDOR HTTP INICIADO EN PUERTO ${port}`);
-      console.log(`✅ SERVIDOR LISTO Y ESCUCHANDO`);
-      console.log("=".repeat(60));
-      
-      if (railwayUrl) {
-        console.log(`\n✅ URL PÚBLICA: ${railwayUrl}/qr`);
-        console.log(`   Health check: ${railwayUrl}/health`);
-      } else {
-        console.log(`\n⚠️  URL pública no encontrada`);
-        console.log(`   Puerto: ${port}`);
-        console.log(`   RAILWAY_PUBLIC_DOMAIN: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'No configurado'}`);
+      // logMessage se cargará después, loguear cuando esté disponible
+      if (typeof logMessage === 'function') {
+      // logMessage se cargará después, loguear cuando esté disponible
+      if (typeof logMessage === 'function') {
+        logMessage("INFO", `Servidor HTTP iniciado en puerto ${port}`, { 
+          url: railwayUrl || `localhost:${port}`,
+          hasPublicDomain: !!railwayUrl
+        });
       }
-      
-      console.log("\n" + "=".repeat(60) + "\n");
+      }
     });
 
     qrServer.on('error', (err) => {
-      console.error(`❌ ERROR en servidor: ${err.message}`);
-      if (err.code === 'EADDRINUSE') {
-        console.error(`⚠️  Puerto ${port} ya en uso`);
+      if (typeof logMessage === 'function') {
+        if (err.code === 'EADDRINUSE') {
+          logMessage("WARNING", `Puerto ${port} ya en uso`);
+        } else {
+          logMessage("ERROR", "Error en servidor HTTP", { error: err.message });
+        }
       }
     });
 
   } catch (serverError) {
-    console.error(`❌ ERROR CRÍTICO al iniciar servidor: ${serverError.message}`);
-    console.error(serverError);
+    if (typeof logMessage === 'function') {
+      logMessage("ERROR", "Error crítico al iniciar servidor HTTP", { error: serverError.message });
+    }
   }
 }
 
 // INICIALIZAR SERVIDOR INMEDIATAMENTE
-console.log("🚀 Iniciando servidor HTTP...");
 inicializarServidorQR();
 
 // Ahora cargar el resto de los módulos
@@ -266,6 +263,11 @@ const MAPS_LINK = config.MAPS_LINK;
 const DEPOSITO_RESERVA = config.DEPOSITO_RESERVA;
 const LOG_LEVEL = config.LOG_LEVEL;
 const MAX_RESERVAS = config.MAX_RESERVAS;
+
+// Inicializar servidor HTTP ahora que logMessage está disponible
+if (typeof inicializarServidorQR === 'function' && !qrServer) {
+  inicializarServidorQR();
+}
 
 // ============================================
 // ESTADO DEL BOT (usando StorageService optimizado)
@@ -1876,7 +1878,6 @@ setTimeout(() => {
   try {
     iniciarBot();
   } catch (error) {
-    console.error("❌ ERROR al iniciar el bot:", error);
     logMessage("ERROR", "Error al iniciar bot", { error: error.message });
   }
 }, 2000);
@@ -1929,7 +1930,10 @@ function iniciarBot() {
           if (asciiQR && typeof asciiQR === "string" && asciiQR.length > 0) {
             const lines = asciiQR.split('\n');
             lines.forEach(line => {
-              console.log("█" + " ".repeat(20) + line + " ".repeat(68 - 20 - line.length) + "█");
+              const lineLength = line.length;
+              const paddingLeft = 20;
+              const paddingRight = Math.max(0, 68 - paddingLeft - lineLength);
+              console.log("█" + " ".repeat(paddingLeft) + line + " ".repeat(paddingRight) + "█");
             });
           } else if (qrData) {
             qrcode.generate(qrData, {
@@ -1952,32 +1956,15 @@ function iniciarBot() {
               const qrDirectUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(qrData)}`;
               
               console.log("\n" + "=".repeat(70));
-              console.log("✅ QR CODE GENERADO - MÚLTIPLES FORMAS DE ACCEDER:");
+              console.log("✅ QR CODE GENERADO");
               console.log("=".repeat(70));
               
-              // OPCIÓN 1: URL directa del QR (más simple)
-              console.log("\n🔹 OPCIÓN 1: URL DIRECTA DEL QR (COPIA Y PEGA EN TU NAVEGADOR)");
+              // URL directa del QR (más simple)
+              console.log("\n🔗 URL DIRECTA DEL QR (COPIA Y PEGA EN TU NAVEGADOR):");
               console.log("   " + qrDirectUrl);
               
-              // OPCIÓN 2: Si hay servidor HTTP
-              if (qrServer) {
-                const railwayUrl = process.env.RAILWAY_PUBLIC_DOMAIN 
-                  ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-                  : `http://localhost:${process.env.PORT || 3000}`;
-                console.log("\n🔹 OPCIÓN 2: PÁGINA WEB DEL QR");
-                console.log("   " + railwayUrl + "/qr");
-                console.log("   " + railwayUrl + "/qr-image (solo imagen)");
-              }
-              
-              // OPCIÓN 3: URL del código QR (si existe)
-              if (qrUrl) {
-                console.log("\n🔹 OPCIÓN 3: URL DEL CÓDIGO QR");
-                console.log("   " + qrUrl);
-              }
-              
               console.log("\n" + "=".repeat(70));
-              console.log("💡 RECOMENDACIÓN: Usa la OPCIÓN 1 (URL directa)");
-              console.log("   Solo copia y pega esa URL en tu navegador para ver el QR");
+              console.log("💡 Copia y pega esa URL en tu navegador para ver el QR");
               console.log("=".repeat(70) + "\n");
               
               logMessage("INFO", "QR generado", { 
@@ -1989,32 +1976,24 @@ function iniciarBot() {
             }
           }
         } catch (error) {
-          console.log("⚠️ Error al mostrar QR. Revisa la sesión en tokens/");
           logMessage("ERROR", "Error al generar QR visual", {
             error: error.message.substring(0, 100),
           });
         }
 
-        console.log("\n" + "=".repeat(70));
-        console.log("💡 Esperando escaneo del QR...");
-        console.log("=".repeat(70) + "\n");
-        
         logMessage("INFO", `QR generado - Intento ${attempts || 1}`, null);
       },
       statusFind: (statusSession, session) => {
-        logMessage("INFO", `Estado de sesión: ${statusSession}`, { session });
         if (statusSession === "isLogged") {
-          logMessage(
-            "SUCCESS",
-            "✅ Sesión iniciada correctamente - No necesitas escanear QR"
-          );
+          console.log("\n✅ SESIÓN INICIADA - Bot conectado y listo\n");
+          logMessage("SUCCESS", "Sesión iniciada correctamente - No necesitas escanear QR");
         } else if (statusSession === "notLogged") {
-          logMessage(
-            "WARNING",
-            "⚠️ Sesión no encontrada - Necesitas escanear el QR"
-          );
+          logMessage("INFO", "Sesión no encontrada - Necesitas escanear el QR");
         } else if (statusSession === "qrReadSuccess") {
-          logMessage("SUCCESS", "✅ QR escaneado exitosamente");
+          console.log("\n✅ QR ESCANEADO EXITOSAMENTE - Apareamiento completado\n");
+          logMessage("SUCCESS", "QR escaneado exitosamente - Apareamiento completado");
+        } else if (LOG_LEVEL === 'verbose' || LOG_LEVEL === 'debug') {
+          logMessage("INFO", `Estado de sesión: ${statusSession}`, { session });
         }
       },
       headless: true,
@@ -2043,12 +2022,13 @@ function iniciarBot() {
     })
     .then((client) => {
       clientInstance = client;
-      logMessage("SUCCESS", "Cliente de WhatsApp creado exitosamente");
+      if (LOG_LEVEL === 'verbose' || LOG_LEVEL === 'debug') {
+        logMessage("INFO", "Cliente de WhatsApp creado");
+      }
       start(client);
     })
     .catch((error) => {
       logMessage("ERROR", "Error al crear cliente", { error: error.message });
-      console.error(error);
 
       // Si el error es EPERM (permisos), intentar limpiar el archivo bloqueado
       if (
@@ -2142,33 +2122,23 @@ function iniciarBot() {
 // FUNCIÓN PRINCIPAL DEL BOT
 // ============================================
 async function start(client) {
-  console.clear();
-  console.log("\n" + "=".repeat(50));
-  console.log("🌿 ESSENZA SPA BOT - ACTIVO");
-  console.log("=".repeat(50));
-  console.log("✅ Bot conectado y listo");
-  console.log("📝 Logs guardados en: logs/");
-  
   // Inicializar base de datos SQLite
   try {
     await db.inicializarDB();
-    console.log("💾 Base de datos SQLite: Inicializada");
-    logMessage("SUCCESS", "Base de datos SQLite inicializada correctamente");
+    logMessage("SUCCESS", "Base de datos SQLite inicializada");
   } catch (error) {
-    console.log("⚠️ Base de datos SQLite: Error");
     logMessage("ERROR", "Error al inicializar base de datos", {
       error: error.message
     });
   }
   
   if (openai) {
-    console.log("🤖 IA: Activada");
-  } else {
-    console.log("🤖 IA: Desactivada (sin API key)");
+    logMessage("INFO", "IA activada");
+  } else if (LOG_LEVEL === 'verbose' || LOG_LEVEL === 'debug') {
+    logMessage("INFO", "IA desactivada (sin API key)");
   }
-  console.log("=".repeat(50) + "\n");
   
-  logMessage("SUCCESS", "Bot iniciado correctamente");
+  logMessage("SUCCESS", "Bot iniciado y listo");
 
   // Sistema de recordatorios (cada hora)
   const intervalRecordatorios = setInterval(() => {
