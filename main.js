@@ -1646,8 +1646,11 @@ if (carpetaBloqueada) {
 // Inicializar servidor HTTP para QR (una sola vez, antes de iniciar el bot)
 function inicializarServidorQR() {
   const port = process.env.PORT || 3000;
+  
+  // Railway siempre proporciona un puerto, pero por si acaso
   if (!port || port === '0') {
     logMessage("WARNING", "Puerto no configurado, servidor QR no se iniciará");
+    console.error("⚠️ ERROR: No se pudo iniciar el servidor QR - Puerto no configurado");
     return;
   }
 
@@ -1846,10 +1849,11 @@ function inicializarServidorQR() {
   }
 }
 
-// Esperar un momento para que los archivos se liberen
+// Inicializar servidor QR INMEDIATAMENTE (Railway necesita que responda de inmediato)
+inicializarServidorQR();
+
+// Esperar un momento para que los archivos se liberen antes de iniciar el bot
 setTimeout(() => {
-  // Inicializar servidor QR antes de iniciar el bot
-  inicializarServidorQR();
   iniciarBot();
 }, 2000);
 
