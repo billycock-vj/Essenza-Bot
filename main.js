@@ -1554,8 +1554,8 @@ if (fs.existsSync(preferencesPath)) {
   }
 }
 
-// Si la carpeta está bloqueada o no se pudieron limpiar archivos, usar carpeta temporal
-if (carpetaBloqueada || (!archivosLimpiados && fs.existsSync(preferencesPath))) {
+// Si la carpeta está bloqueada, usar carpeta temporal
+if (carpetaBloqueada) {
   const timestamp = Date.now();
   const tempSessionName = `essenza-bot-temp-${timestamp}`;
   const tempTokensPath = path.join(__dirname, "tokens", tempSessionName);
@@ -1579,7 +1579,7 @@ if (carpetaBloqueada || (!archivosLimpiados && fs.existsSync(preferencesPath))) 
 } else {
   // Verificar si hay una sesión guardada válida antes de renombrar
   // Solo renombrar si Preferences está bloqueado Y no hay archivos de sesión importantes
-  if (!archivosLimpiados && fs.existsSync(preferencesPath)) {
+  if (fs.existsSync(preferencesPath)) {
     // Verificar si hay archivos de sesión importantes (como Local Storage)
     const sessionFiles = [
       path.join(defaultPath, "Local Storage"),
