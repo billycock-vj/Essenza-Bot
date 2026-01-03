@@ -1,7 +1,219 @@
 require("dotenv").config();
+
+// ============================================
+// INICIALIZAR SERVIDOR HTTP LO MÁS PRONTO POSIBLE
+// ============================================
+// CRÍTICO: Railway necesita que el servidor responda inmediatamente
+// Inicializamos el servidor ANTES de cargar otros módulos pesados
+const http = require('http');
+
+// Variables globales para el servidor QR (deben estar antes de cualquier otra cosa)
+let qrServer = null;
+let currentQRData = null;
+let currentQRUrl = null;
+
+// Función para inicializar el servidor HTTP (debe estar definida temprano)
+function inicializarServidorQR() {
+  const port = process.env.PORT || 3000;
+  
+  if (!port || port === '0') {
+    console.error("⚠️ ERROR: Puerto no configurado");
+    return;
+  }
+
+  if (qrServer) {
+    console.log("✅ Servidor QR ya está activo");
+    return;
+  }
+
+  try {
+    qrServer = http.createServer((req, res) => {
+      try {
+        if (req.url === '/qr' || req.url === '/') {
+          if (currentQRData) {
+            const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(currentQRData)}`;
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(`
+              <!DOCTYPE html>
+              <html>
+              <head>
+                <title>QR Code - Essenza Bot</title>
+                <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <meta http-equiv="refresh" content="5">
+                <style>
+                  body {
+                    font-family: Arial, sans-serif;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    min-height: 100vh;
+                    margin: 0;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                  }
+                  .container {
+                    text-align: center;
+                    background: rgba(255,255,255,0.1);
+                    padding: 30px;
+                    border-radius: 20px;
+                    backdrop-filter: blur(10px);
+                    max-width: 600px;
+                  }
+                  h1 { margin-top: 0; }
+                  img {
+                    max-width: 500px;
+                    width: 100%;
+                    border: 5px solid white;
+                    border-radius: 10px;
+                    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+                  }
+                  .url {
+                    margin-top: 20px;
+                    padding: 15px;
+                    background: rgba(255,255,255,0.2);
+                    border-radius: 10px;
+                    word-break: break-all;
+                  }
+                  a {
+                    color: #fff;
+                    text-decoration: underline;
+                  }
+                  .info {
+                    margin-top: 20px;
+                    font-size: 14px;
+                    opacity: 0.8;
+                  }
+                </style>
+              </head>
+              <body>
+                <div class="container">
+                  <h1>📱 Escanea este QR con WhatsApp</h1>
+                  <img src="${qrApiUrl}" alt="QR Code">
+                  ${currentQRUrl ? `<div class="url"><strong>URL:</strong><br><a href="${currentQRUrl}" target="_blank">${currentQRUrl}</a></div>` : ''}
+                  <p style="margin-top: 20px;">Escanea el código QR con WhatsApp para conectar el bot</p>
+                  <p class="info">Esta página se actualiza automáticamente cada 5 segundos</p>
+                </div>
+              </body>
+              </html>
+            `);
+          } else {
+            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(`
+              <!DOCTYPE html>
+              <html>
+              <head>
+                <title>QR Code - Essenza Bot</title>
+                <meta charset="utf-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <meta http-equiv="refresh" content="5">
+                <style>
+                  body {
+                    font-family: Arial, sans-serif;
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    min-height: 100vh;
+                    margin: 0;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                  }
+                  .container {
+                    text-align: center;
+                    background: rgba(255,255,255,0.1);
+                    padding: 30px;
+                    border-radius: 20px;
+                    backdrop-filter: blur(10px);
+                    max-width: 600px;
+                  }
+                  .spinner {
+                    border: 4px solid rgba(255,255,255,0.3);
+                    border-top: 4px solid white;
+                    border-radius: 50%;
+                    width: 50px;
+                    height: 50px;
+                    animation: spin 1s linear infinite;
+                    margin: 20px auto;
+                  }
+                  @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                  }
+                </style>
+              </head>
+              <body>
+                <div class="container">
+                  <h1>⏳ Esperando QR Code...</h1>
+                  <div class="spinner"></div>
+                  <p>El bot se está iniciando. El QR aparecerá aquí cuando esté listo.</p>
+                  <p style="margin-top: 20px; font-size: 14px; opacity: 0.8;">Esta página se actualiza automáticamente</p>
+                </div>
+              </body>
+              </html>
+            `);
+          }
+        } else if (req.url === '/health') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ status: 'ok', qrAvailable: !!currentQRData }));
+        } else {
+          res.writeHead(404);
+          res.end('Not found');
+        }
+      } catch (reqError) {
+        console.error("Error procesando petición:", reqError);
+        try {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Internal Server Error');
+        } catch (resError) {
+          res.destroy();
+        }
+      }
+    });
+
+    qrServer.listen(port, '0.0.0.0', () => {
+      const railwayUrl = process.env.RAILWAY_PUBLIC_DOMAIN 
+        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+        : null;
+      
+      console.log(`\n${"=".repeat(60)}`);
+      console.log(`🌐 SERVIDOR HTTP INICIADO EN PUERTO ${port}`);
+      console.log(`✅ SERVIDOR LISTO Y ESCUCHANDO`);
+      console.log("=".repeat(60));
+      
+      if (railwayUrl) {
+        console.log(`\n✅ URL PÚBLICA: ${railwayUrl}/qr`);
+        console.log(`   Health check: ${railwayUrl}/health`);
+      } else {
+        console.log(`\n⚠️  URL pública no encontrada`);
+        console.log(`   Puerto: ${port}`);
+        console.log(`   RAILWAY_PUBLIC_DOMAIN: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'No configurado'}`);
+      }
+      
+      console.log("\n" + "=".repeat(60) + "\n");
+    });
+
+    qrServer.on('error', (err) => {
+      console.error(`❌ ERROR en servidor: ${err.message}`);
+      if (err.code === 'EADDRINUSE') {
+        console.error(`⚠️  Puerto ${port} ya en uso`);
+      }
+    });
+
+  } catch (serverError) {
+    console.error(`❌ ERROR CRÍTICO al iniciar servidor: ${serverError.message}`);
+    console.error(serverError);
+  }
+}
+
+// INICIALIZAR SERVIDOR INMEDIATAMENTE
+console.log("🚀 Iniciando servidor HTTP...");
+inicializarServidorQR();
+
+// Ahora cargar el resto de los módulos
 const wppconnect = require("@wppconnect-team/wppconnect");
 const qrcode = require("qrcode-terminal");
-const http = require('http');
 const fs = require("fs");
 const path = require("path");
 const OpenAI = require("openai");
@@ -58,10 +270,8 @@ const intervals = [];
 // Estadísticas del bot
 let estadisticas;
 
-// Servidor HTTP para QR (se crea una sola vez)
-let qrServer = null;
-let currentQRData = null;
-let currentQRUrl = null;
+// Servidor HTTP para QR - Ya inicializado al inicio del archivo
+// (las variables están definidas arriba)
 
 // Cargar estado persistido al iniciar
 let estadisticasCargadas = persistence.cargarEstadisticas();
@@ -1643,247 +1853,8 @@ if (carpetaBloqueada) {
   }
 }
 
-// Inicializar servidor HTTP para QR (una sola vez, antes de iniciar el bot)
-function inicializarServidorQR() {
-  const port = process.env.PORT || 3000;
-  
-  // Railway siempre proporciona un puerto, pero por si acaso
-  if (!port || port === '0') {
-    logMessage("WARNING", "Puerto no configurado, servidor QR no se iniciará");
-    console.error("⚠️ ERROR: No se pudo iniciar el servidor QR - Puerto no configurado");
-    return;
-  }
-
-  // Si el servidor ya existe, no crear otro
-  if (qrServer) {
-    logMessage("INFO", "Servidor QR ya está activo");
-    return;
-  }
-
-  try {
-    qrServer = http.createServer((req, res) => {
-      // Asegurar que siempre respondamos, incluso si hay errores
-      try {
-        if (req.url === '/qr' || req.url === '/') {
-        // Si hay un QR disponible, mostrarlo
-        if (currentQRData) {
-          const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=${encodeURIComponent(currentQRData)}`;
-          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end(`
-            <!DOCTYPE html>
-            <html>
-            <head>
-              <title>QR Code - Essenza Bot</title>
-              <meta charset="utf-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1">
-              <meta http-equiv="refresh" content="5">
-              <style>
-                body {
-                  font-family: Arial, sans-serif;
-                  display: flex;
-                  flex-direction: column;
-                  align-items: center;
-                  justify-content: center;
-                  min-height: 100vh;
-                  margin: 0;
-                  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                  color: white;
-                }
-                .container {
-                  text-align: center;
-                  background: rgba(255,255,255,0.1);
-                  padding: 30px;
-                  border-radius: 20px;
-                  backdrop-filter: blur(10px);
-                  max-width: 600px;
-                }
-                h1 { margin-top: 0; }
-                img {
-                  max-width: 500px;
-                  width: 100%;
-                  border: 5px solid white;
-                  border-radius: 10px;
-                  box-shadow: 0 10px 30px rgba(0,0,0,0.3);
-                }
-                .url {
-                  margin-top: 20px;
-                  padding: 15px;
-                  background: rgba(255,255,255,0.2);
-                  border-radius: 10px;
-                  word-break: break-all;
-                }
-                a {
-                  color: #fff;
-                  text-decoration: underline;
-                }
-                .info {
-                  margin-top: 20px;
-                  font-size: 14px;
-                  opacity: 0.8;
-                }
-              </style>
-            </head>
-            <body>
-              <div class="container">
-                <h1>📱 Escanea este QR con WhatsApp</h1>
-                <img src="${qrApiUrl}" alt="QR Code">
-                ${currentQRUrl ? `<div class="url"><strong>URL:</strong><br><a href="${currentQRUrl}" target="_blank">${currentQRUrl}</a></div>` : ''}
-                <p style="margin-top: 20px;">Escanea el código QR con WhatsApp para conectar el bot</p>
-                <p class="info">Esta página se actualiza automáticamente cada 5 segundos</p>
-              </div>
-            </body>
-            </html>
-          `);
-        } else {
-          // Si no hay QR, mostrar mensaje de espera
-          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-          res.end(`
-            <!DOCTYPE html>
-            <html>
-            <head>
-              <title>QR Code - Essenza Bot</title>
-              <meta charset="utf-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1">
-              <meta http-equiv="refresh" content="5">
-              <style>
-                body {
-                  font-family: Arial, sans-serif;
-                  display: flex;
-                  flex-direction: column;
-                  align-items: center;
-                  justify-content: center;
-                  min-height: 100vh;
-                  margin: 0;
-                  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                  color: white;
-                }
-                .container {
-                  text-align: center;
-                  background: rgba(255,255,255,0.1);
-                  padding: 30px;
-                  border-radius: 20px;
-                  backdrop-filter: blur(10px);
-                  max-width: 600px;
-                }
-                .spinner {
-                  border: 4px solid rgba(255,255,255,0.3);
-                  border-top: 4px solid white;
-                  border-radius: 50%;
-                  width: 50px;
-                  height: 50px;
-                  animation: spin 1s linear infinite;
-                  margin: 20px auto;
-                }
-                @keyframes spin {
-                  0% { transform: rotate(0deg); }
-                  100% { transform: rotate(360deg); }
-                }
-              </style>
-            </head>
-            <body>
-              <div class="container">
-                <h1>⏳ Esperando QR Code...</h1>
-                <div class="spinner"></div>
-                <p>El bot se está iniciando. El QR aparecerá aquí cuando esté listo.</p>
-                <p style="margin-top: 20px; font-size: 14px; opacity: 0.8;">Esta página se actualiza automáticamente</p>
-              </div>
-            </body>
-            </html>
-          `);
-        }
-      } else if (req.url === '/health') {
-        // Health check endpoint para Railway - CRÍTICO
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok', qrAvailable: !!currentQRData }));
-      } else {
-        res.writeHead(404);
-        res.end('Not found');
-      }
-      } catch (reqError) {
-        // Si hay un error procesando la petición, responder con error 500
-        console.error("Error procesando petición:", reqError);
-        try {
-          res.writeHead(500, { 'Content-Type': 'text/plain' });
-          res.end('Internal Server Error');
-        } catch (resError) {
-          // Si no podemos responder, cerrar la conexión
-          res.destroy();
-        }
-      }
-    });
-
-    qrServer.listen(port, '0.0.0.0', () => {
-      const railwayUrl = process.env.RAILWAY_PUBLIC_DOMAIN 
-        ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-        : null;
-      
-      console.log(`\n${"=".repeat(60)}`);
-      console.log(`🌐 SERVIDOR QR INICIADO EN PUERTO ${port}`);
-      console.log("=".repeat(60));
-      
-      if (railwayUrl) {
-        console.log(`\n✅ URL PÚBLICA ENCONTRADA:`);
-        console.log(`   🔗 ${railwayUrl}/qr`);
-        console.log(`   🔗 ${railwayUrl}/`);
-        console.log(`   🔗 ${railwayUrl}/health (health check)`);
-        console.log(`\n💡 Abre cualquiera de estas URLs en tu navegador para ver el QR`);
-      } else {
-        console.log(`\n⚠️  NO SE ENCONTRÓ URL PÚBLICA DE RAILWAY`);
-        console.log(`\n📋 Para encontrar tu URL pública:`);
-        console.log(`   1. Ve a https://railway.app`);
-        console.log(`   2. Selecciona tu proyecto`);
-        console.log(`   3. ⚠️  IMPORTANTE: Haz clic en tu SERVICIO (no en "Project Settings")`);
-        console.log(`   4. En el servicio, busca "Generate Domain" o ve a Settings → Networking`);
-        console.log(`   5. Si no hay dominio, haz clic en "Generate Domain"`);
-        console.log(`   6. Copia la URL y agrega /qr al final`);
-        console.log(`\n📄 También revisa: COMO_ENCONTRAR_URL_RAILWAY.md`);
-        console.log(`\n🔧 Variables disponibles:`);
-        console.log(`   - PORT: ${port}`);
-        console.log(`   - RAILWAY_PUBLIC_DOMAIN: ${process.env.RAILWAY_PUBLIC_DOMAIN || 'No configurado'}`);
-        console.log(`   - RAILWAY_ENVIRONMENT: ${process.env.RAILWAY_ENVIRONMENT || 'No configurado'}`);
-      }
-      
-      console.log("\n" + "=".repeat(60) + "\n");
-      logMessage("INFO", `Servidor QR iniciado en puerto ${port}`, { 
-        url: railwayUrl || `localhost:${port}`,
-        hasPublicDomain: !!railwayUrl
-      });
-    });
-
-    qrServer.on('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        logMessage("WARNING", `Puerto ${port} ya en uso, servidor QR no se inició`);
-      } else {
-        logMessage("ERROR", "Error en servidor QR", { error: err.message });
-      }
-    });
-  } catch (serverError) {
-    logMessage("ERROR", "No se pudo iniciar servidor QR", { error: serverError.message });
-  }
-}
-
-// ============================================
-// INICIALIZAR SERVIDOR HTTP INMEDIATAMENTE
-// ============================================
-// CRÍTICO: El servidor debe iniciarse ANTES que cualquier otra cosa
-// Railway necesita que responda de inmediato para health checks
-try {
-  inicializarServidorQR();
-  console.log("✅ Servidor HTTP inicializado");
-} catch (error) {
-  console.error("❌ ERROR CRÍTICO: No se pudo inicializar el servidor HTTP");
-  console.error(error);
-  // Intentar de nuevo después de un momento
-  setTimeout(() => {
-    try {
-      inicializarServidorQR();
-      console.log("✅ Servidor HTTP inicializado (segundo intento)");
-    } catch (retryError) {
-      console.error("❌ ERROR: Falló el segundo intento de inicializar el servidor");
-      console.error(retryError);
-    }
-  }, 1000);
-}
+// La función inicializarServidorQR() ya está definida e inicializada al inicio del archivo
+// No es necesario duplicarla aquí
 
 // Esperar un momento para que los archivos se liberen antes de iniciar el bot
 setTimeout(() => {
