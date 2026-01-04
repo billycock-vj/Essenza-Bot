@@ -216,6 +216,9 @@ async function obtenerReservas(filtros = {}) {
 async function consultarDisponibilidad(fecha, duracionMinima = 60) {
   const db = await abrirDB();
   
+  // Importar función para obtener horario del día (evitar dependencia circular)
+  const { obtenerHorarioDelDia } = require('../utils/validators');
+  
   return new Promise((resolve, reject) => {
     // Obtener inicio y fin del día
     const inicioDia = new Date(fecha);
@@ -223,6 +226,16 @@ async function consultarDisponibilidad(fecha, duracionMinima = 60) {
     
     const finDia = new Date(fecha);
     finDia.setHours(23, 59, 59, 999);
+    
+    // Obtener horario de atención según el día de la semana
+    const horario = obtenerHorarioDelDia(fecha);
+    
+    // Si el día está cerrado, retornar array vacío
+    if (!horario.abierto) {
+      db.close();
+      resolve([]);
+      return;
+    }
     
     // Obtener todas las reservas del día
     db.all(`
@@ -237,9 +250,9 @@ async function consultarDisponibilidad(fecha, duracionMinima = 60) {
       if (err) {
         reject(err);
       } else {
-        // Horario de atención (configurable)
-        const horarioApertura = 11; // 11:00
-        const horarioCierre = 19; // 19:00
+        // Horario de atención según el día (dinámico)
+        const horarioApertura = horario.apertura; // 10 para sábado, 11 para otros días
+        const horarioCierre = horario.cierre; // 16 para sábado, 19 para otros días
         const intervalo = 30; // Intervalo de 30 minutos
         
         // Convertir reservas a objetos Date
@@ -254,8 +267,19 @@ async function consultarDisponibilidad(fecha, duracionMinima = 60) {
         const horaActual = new Date(inicioDia);
         horaActual.setHours(horarioApertura, 0, 0, 0);
         
-        while (horaActual.getHours() < horarioCierre) {
+        // Calcular hora de cierre en minutos para comparación precisa
+        const horaCierreMinutos = horarioCierre * 60;
+        
+        while (horaActual.getHours() < horarioCierre || 
+               (horaActual.getHours() === horarioCierre && horaActual.getMinutes() === 0)) {
           const finHorario = new Date(horaActual.getTime() + duracionMinima * 60000);
+          
+          // Verificar que el horario completo (inicio + duración) no exceda el cierre
+          const horaFinMinutos = finHorario.getHours() * 60 + finHorario.getMinutes();
+          if (horaFinMinutos > horaCierreMinutos) {
+            // Si este horario se extiende más allá del cierre, no incluirlo
+            break;
+          }
           
           // Verificar si este horario se solapa con alguna reserva
           const hayConflicto = reservas.some(reserva => {
@@ -264,12 +288,18 @@ async function consultarDisponibilidad(fecha, duracionMinima = 60) {
                    (horaActual <= reserva.inicio && finHorario >= reserva.fin);
           });
           
-          if (!hayConflicto && finHorario.getHours() <= horarioCierre) {
+          if (!hayConflicto) {
             horariosDisponibles.push(new Date(horaActual));
           }
           
           // Avanzar al siguiente intervalo
           horaActual.setMinutes(horaActual.getMinutes() + intervalo);
+          
+          // Si ya pasamos el horario de cierre, salir
+          const horaActualMinutos = horaActual.getHours() * 60 + horaActual.getMinutes();
+          if (horaActualMinutos >= horaCierreMinutos) {
+            break;
+          }
         }
         
         resolve(horariosDisponibles);

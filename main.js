@@ -253,7 +253,8 @@ const db = require('./services/database');
 // CONFIGURACIÓN (desde módulo)
 // ============================================
 const ADMIN_NUMBER = config.ADMIN_NUMBER; // Mantener para compatibilidad
-const ADMIN_NUMBERS = config.ADMIN_NUMBERS; // Array de todos los administradores
+const ADMIN_NUMBERS = config.ADMIN_NUMBERS; // Array de todos los administradores (con @c.us y @lid)
+const ADMIN_NUMBERS_SIN_SUFIJO = config.ADMIN_NUMBERS_SIN_SUFIJO || []; // Array de números sin sufijo para comparaciones
 const HORARIO_ATENCION = config.HORARIO_ATENCION;
 const YAPE_NUMERO = config.YAPE_NUMERO;
 const YAPE_TITULAR = config.YAPE_TITULAR;
@@ -341,8 +342,101 @@ if (userDataCargado) {
 
 // Función para verificar si un usuario es administrador
 function esAdministrador(userId) {
-  if (!userId) return false;
-  return ADMIN_NUMBERS.includes(userId);
+  if (!userId) {
+    console.log(`❌ esAdministrador: userId vacío`);
+    return false;
+  }
+  
+  // Extraer número sin sufijo para comparación
+  const numeroUsuario = extraerNumero(userId);
+  const numerosAdmin = ADMIN_NUMBERS.map(n => extraerNumero(n));
+  
+  console.log(`\n🔍 VERIFICANDO ADMINISTRADOR:`);
+  console.log(`   UserId recibido: "${userId}"`);
+  console.log(`   Número extraído: "${numeroUsuario}"`);
+  console.log(`   Números admin configurados:`, numerosAdmin);
+  console.log(`   Admin numbers completos:`, ADMIN_NUMBERS);
+  console.log(`   ADMIN_NUMBERS_SIN_SUFIJO:`, ADMIN_NUMBERS_SIN_SUFIJO);
+  
+  // Verificar coincidencia exacta del userId completo
+  if (ADMIN_NUMBERS.includes(userId)) {
+    console.log(`✅ ADMINISTRADOR DETECTADO (coincidencia exacta userId)`);
+    return true;
+  }
+  
+  // Verificar por número sin sufijo
+  if (numerosAdmin.includes(numeroUsuario)) {
+    console.log(`✅ ADMINISTRADOR DETECTADO (coincidencia por número)`);
+    return true;
+  }
+  
+  // Verificar también con diferentes formatos posibles
+  const numeroSinPrefijo = numeroUsuario.replace(/^\+?/, ''); // Quitar + si existe
+  const numerosAdminSinPrefijo = numerosAdmin.map(n => n.replace(/^\+?/, ''));
+  
+  if (numerosAdminSinPrefijo.includes(numeroSinPrefijo)) {
+    console.log(`✅ ADMINISTRADOR DETECTADO (coincidencia sin prefijo)`);
+    return true;
+  }
+  
+  // Verificar si el número termina con alguno de los números admin (para casos como 260602106781739 que contiene 972002363)
+  // O si algún número admin está contenido en el número del usuario
+  // También verificar con ADMIN_NUMBERS_SIN_SUFIJO que incluye variantes con y sin código de país
+  const todosLosNumerosAdmin = ADMIN_NUMBERS_SIN_SUFIJO || numerosAdmin;
+  
+  for (const numAdmin of todosLosNumerosAdmin) {
+    const numAdminSinPrefijo = numAdmin.replace(/^\+?/, '').replace(/^51/, ''); // Quitar + y código 51
+    const numUsuarioSinPrefijo = numeroSinPrefijo.replace(/^51/, ''); // Quitar código 51 si existe
+    
+    // Verificar coincidencia exacta sin prefijos
+    if (numUsuarioSinPrefijo === numAdminSinPrefijo) {
+      console.log(`✅ ADMINISTRADOR DETECTADO (coincidencia sin prefijos)`);
+      console.log(`   Número usuario (sin prefijos): "${numUsuarioSinPrefijo}"`);
+      console.log(`   Número admin (sin prefijos): "${numAdminSinPrefijo}"`);
+      return true;
+    }
+    
+    // Verificar si el número admin está al final del número del usuario (últimos 9 dígitos)
+    if (numUsuarioSinPrefijo.length >= 9 && numAdminSinPrefijo.length >= 9) {
+      const ultimos9Usuario = numUsuarioSinPrefijo.slice(-9);
+      const ultimos9Admin = numAdminSinPrefijo.slice(-9);
+      if (ultimos9Usuario === ultimos9Admin) {
+        console.log(`✅ ADMINISTRADOR DETECTADO (coincidencia últimos 9 dígitos)`);
+        console.log(`   Últimos 9 dígitos usuario: "${ultimos9Usuario}"`);
+        console.log(`   Últimos 9 dígitos admin: "${ultimos9Admin}"`);
+        return true;
+      }
+    }
+    
+    // Verificar si contiene el número admin (para casos donde el userId es un ID largo)
+    // Especialmente útil para números como 260602106781739 que pueden contener 972002363
+    if (numUsuarioSinPrefijo.includes(numAdminSinPrefijo) || 
+        numAdminSinPrefijo.includes(numUsuarioSinPrefijo)) {
+      console.log(`✅ ADMINISTRADOR DETECTADO (coincidencia parcial)`);
+      console.log(`   Número usuario: "${numUsuarioSinPrefijo}"`);
+      console.log(`   Número admin: "${numAdminSinPrefijo}"`);
+      return true;
+    }
+    
+    // Verificar si los últimos dígitos del número admin coinciden con los últimos dígitos del userId
+    // Esto es útil cuando WhatsApp usa IDs largos pero mantiene los últimos dígitos del número real
+    if (numAdminSinPrefijo.length >= 6 && numUsuarioSinPrefijo.length >= numAdminSinPrefijo.length) {
+      const ultimosDigitosAdmin = numAdminSinPrefijo.slice(-6); // Últimos 6 dígitos
+      const ultimosDigitosUsuario = numUsuarioSinPrefijo.slice(-6);
+      if (ultimosDigitosUsuario === ultimosDigitosAdmin) {
+        console.log(`✅ ADMINISTRADOR DETECTADO (coincidencia últimos 6 dígitos)`);
+        console.log(`   Últimos 6 dígitos usuario: "${ultimosDigitosUsuario}"`);
+        console.log(`   Últimos 6 dígitos admin: "${ultimosDigitosAdmin}"`);
+        return true;
+      }
+    }
+  }
+  
+  console.log(`❌ NO ES ADMINISTRADOR`);
+  console.log(`   Comparación falló para: "${numeroUsuario}"`);
+  console.log(`   No coincide con:`, numerosAdmin);
+  
+  return false;
 }
 
 // Función helper para inicializar objetos de usuario (usando storage)
@@ -729,12 +823,27 @@ function detectarConsultaServicio(texto) {
 
 // Función para detectar intención de reserva en lenguaje natural
 function detectarIntencionReserva(texto) {
-  const textoLower = texto.toLowerCase();
+  const textoLower = texto.toLowerCase().trim();
+
+  // Excluir comandos de administrador que contienen "citas" o "reservas"
+  const comandosAdmin = [
+    "citas de hoy",
+    "citas hoy",
+    "reservas de hoy",
+    "reservas hoy",
+    "estadisticas",
+    "stats",
+    "estadísticas"
+  ];
+  
+  // Si es un comando de administrador, no es una reserva
+  if (comandosAdmin.some(cmd => textoLower === cmd || textoLower.includes(cmd))) {
+    return false;
+  }
 
   const palabrasReserva = [
     "reservar",
     "reserva",
-    "cita",
     "agendar",
     "agenda",
     "programar",
@@ -757,6 +866,34 @@ function detectarIntencionReserva(texto) {
     "deseo agendar",
     "necesito agendar",
   ];
+
+  // Solo detectar "cita" si NO es parte de "citas de hoy" o "citas hoy"
+  const tieneCita = textoLower.includes("cita");
+  const esComandoCitas = textoLower.includes("citas de hoy") || 
+                         textoLower.includes("citas hoy") ||
+                         textoLower === "citas de hoy" ||
+                         textoLower === "citas hoy";
+  
+  if (tieneCita && !esComandoCitas) {
+    // Verificar que sea una intención real de reserva, no una consulta
+    const esIntencionReserva = palabrasReserva.some((palabra) => {
+      if (palabra === "cita") return false; // Ya lo manejamos arriba
+      return textoLower.includes(palabra);
+    });
+    
+    // Si tiene "cita" y también tiene palabras de intención, es reserva
+    if (esIntencionReserva) {
+      return true;
+    }
+    
+    // Si solo tiene "cita" pero con contexto de solicitud
+    const contextoReserva = ["quiero", "deseo", "necesito", "puedo", "hacer", "sacar", "pedir", "solicitar"];
+    if (contextoReserva.some(ctx => textoLower.includes(ctx))) {
+      return true;
+    }
+    
+    return false;
+  }
 
   return palabrasReserva.some((palabra) => textoLower.includes(palabra));
 }
@@ -2322,12 +2459,41 @@ async function start(client) {
         message.pushname ||
         storage.getUserName(userId) ||
         "Usuario";
+      
+      // Intentar obtener el número real del mensaje si está disponible
+      // Algunos mensajes tienen el número en diferentes propiedades
+      const numeroRealDelMensaje = message.wid?.user || 
+                                   message.author || 
+                                   message.from?.split('@')[0] || 
+                                   userId.split('@')[0] ||
+                                   null;
+      
+      // Log para debugging - SIEMPRE mostrar información del mensaje
+      console.log(`\n📱 INFORMACIÓN DEL MENSAJE:`);
+      console.log(`   message.from: ${message.from}`);
+      console.log(`   message.wid: ${JSON.stringify(message.wid)}`);
+      console.log(`   message.author: ${message.author}`);
+      console.log(`   message.notifyName: ${message.notifyName}`);
+      console.log(`   message.pushname: ${message.pushname}`);
+      console.log(`   userId extraído: ${userId}`);
+      console.log(`   número real del mensaje: ${numeroRealDelMensaje}\n`);
+      
       // Inicializar usuario al recibir mensaje
       inicializarUsuario(userId);
       
       // Sanitizar mensaje antes de procesar
       const text = sanitizarMensaje(message.body || "");
       const textLower = text.toLowerCase();
+      
+      // LOG CRÍTICO: Registrar TODOS los mensajes recibidos (especialmente para debugging)
+      logMessage("INFO", `📨 MENSAJE RECIBIDO`, {
+        userId: userId,
+        numero: extraerNumero(userId),
+        userName: userName,
+        mensaje: text,
+        textLower: textLower,
+        longitud: text.length
+      });
 
       // Actualizar estadísticas
       estadisticas.totalMensajes++;
@@ -2375,9 +2541,35 @@ async function start(client) {
       }
 
       // ============================================
-      // COMANDOS DEL ADMINISTRADOR
+      // COMANDOS DEL ADMINISTRADOR (PROCESAR PRIMERO - ANTES DE CUALQUIER OTRA LÓGICA)
       // ============================================
-      if (esAdministrador(userId)) {
+      // Verificar si es administrador INMEDIATAMENTE después de obtener el texto
+      // Usar el número real del mensaje que ya se extrajo arriba
+      logMessage("INFO", `🔍 VERIFICANDO SI ES ADMINISTRADOR`, {
+        userId: userId,
+        numero: extraerNumero(userId),
+        numeroRealDelMensaje: numeroRealDelMensaje,
+        adminNumbers: ADMIN_NUMBERS.map(n => extraerNumero(n))
+      });
+      
+      const esAdmin = esAdministrador(userId, numeroRealDelMensaje);
+      
+      // Log detallado para debugging - SIEMPRE mostrar
+      logMessage("INFO", `🔍 RESULTADO VERIFICACIÓN ADMINISTRADOR`, {
+        esAdmin: esAdmin,
+        userId: userId,
+        numero: extraerNumero(userId),
+        mensaje: text.substring(0, 50),
+        textLower: textLower.substring(0, 50)
+      });
+      
+      if (esAdmin) {
+        logMessage("INFO", `🔑 ✅ ADMINISTRADOR CONFIRMADO - PROCESANDO COMANDOS`, {
+          userId: userId,
+          numero: extraerNumero(userId),
+          mensaje: text,
+          textLower: textLower
+        });
         // Comando: Estadísticas
         if (
           textLower === "estadisticas" ||
@@ -2401,34 +2593,118 @@ async function start(client) {
           return;
         }
 
-        // Comando: Citas de hoy
-        if (
-          fuzzyMatch(textLower, "citas de hoy") ||
-          fuzzyMatch(textLower, "citas hoy") ||
-          fuzzyMatch(textLower, "reservas de hoy") ||
-          fuzzyMatch(textLower, "reservas hoy") ||
-          textLower === "citas de hoy" ||
-          textLower === "citas hoy" ||
-          textLower === "reservas de hoy" ||
-          textLower === "reservas hoy"
-        ) {
+        // Comando: Citas de fecha específica
+        // Formato: citas_dd/MM/yyyy (ejemplo: citas_03/01/2025)
+        // Funciona en minúsculas o mayúsculas
+        const textoTrim = textLower.trim();
+        
+        // Verificar si el comando empieza con "citas_"
+        const esComandoCitas = textoTrim.startsWith("citas_");
+        
+        console.log(`\n🔍 VERIFICANDO COMANDO DE CITAS:`);
+        console.log(`   Texto original: "${text}"`);
+        console.log(`   TextLower: "${textLower}"`);
+        console.log(`   TextoTrim: "${textoTrim}"`);
+        console.log(`   ¿Empieza con "citas_"? ${esComandoCitas ? '✅ SÍ' : '❌ NO'}`);
+        
+        if (esComandoCitas) {
+          // Extraer la fecha del comando (después de "citas_")
+          const fechaStr = textoTrim.substring(6); // Quitar "citas_"
+          console.log(`   Fecha extraída del comando: "${fechaStr}"`);
+          
+          // Parsear la fecha en formato dd/MM/yyyy
+          let fechaConsulta = null;
           try {
-            const citas = await obtenerCitasDelDia();
-            await enviarMensajeSeguro(client, userId, citas);
-            if (LOG_LEVEL === 'verbose') {
-              logMessage("INFO", "Citas del día enviadas al administrador");
+            const partesFecha = fechaStr.split('/');
+            if (partesFecha.length === 3) {
+              const dia = parseInt(partesFecha[0], 10);
+              const mes = parseInt(partesFecha[1], 10) - 1; // Los meses en JS son 0-indexed
+              const año = parseInt(partesFecha[2], 10);
+              
+              // Validar que los números sean válidos
+              if (!isNaN(dia) && !isNaN(mes) && !isNaN(año) && 
+                  dia >= 1 && dia <= 31 && 
+                  mes >= 0 && mes <= 11 && 
+                  año >= 2020 && año <= 2100) {
+                fechaConsulta = new Date(año, mes, dia);
+                
+                // Verificar que la fecha es válida (por ejemplo, no 31/02)
+                if (fechaConsulta.getDate() === dia && 
+                    fechaConsulta.getMonth() === mes && 
+                    fechaConsulta.getFullYear() === año) {
+                  console.log(`   ✅ Fecha válida parseada: ${fechaConsulta.toLocaleDateString('es-PE')}`);
+                } else {
+                  console.log(`   ❌ Fecha inválida (ej: 31/02)`);
+                  fechaConsulta = null;
+                }
+              } else {
+                console.log(`   ❌ Números de fecha inválidos`);
+                fechaConsulta = null;
+              }
+            } else {
+              console.log(`   ❌ Formato de fecha incorrecto (debe ser dd/MM/yyyy)`);
+              fechaConsulta = null;
             }
           } catch (error) {
-            logMessage("ERROR", "Error al obtener citas del día", {
-              error: error.message,
+            console.log(`   ❌ Error al parsear fecha: ${error.message}`);
+            fechaConsulta = null;
+          }
+          
+          if (fechaConsulta) {
+            console.log(`\n✅ ✅ ✅ COMANDO "CITAS" DETECTADO - Fecha: ${fechaConsulta.toLocaleDateString('es-PE')} ✅ ✅ ✅\n`);
+            
+            logMessage("INFO", `✅ COMANDO "CITAS" DETECTADO - Ejecutando...`, {
+              userId: extraerNumero(userId),
+              mensaje: text,
+              fecha: fechaConsulta.toISOString(),
+              fechaFormateada: fechaConsulta.toLocaleDateString('es-PE')
             });
+            
+            try {
+              console.log(`\n📋 Obteniendo citas del día ${fechaConsulta.toLocaleDateString('es-PE')}...\n`);
+              const citas = await obtenerCitasDelDia(fechaConsulta);
+              console.log(`\n✅ Citas obtenidas correctamente`);
+              console.log(`   Longitud del mensaje: ${citas.length} caracteres`);
+              console.log(`   Enviando a administrador...\n`);
+              
+              logMessage("SUCCESS", `Citas obtenidas, enviando a administrador`, {
+                fecha: fechaConsulta.toLocaleDateString('es-PE'),
+                numeroCitas: citas.split('\n').filter(l => l.includes('✅') || l.includes('⏳')).length
+              });
+              await enviarMensajeSeguro(client, userId, citas);
+              console.log(`\n✅ ✅ ✅ CITAS DEL DÍA ENVIADAS AL ADMINISTRADOR CORRECTAMENTE ✅ ✅ ✅\n`);
+              logMessage("SUCCESS", "✅ Citas del día enviadas al administrador correctamente");
+            } catch (error) {
+              logMessage("ERROR", "❌ Error al obtener citas del día", {
+                error: error.message,
+                stack: error.stack
+              });
+              await enviarMensajeSeguro(
+                client,
+                userId,
+                "❌ Error al obtener las citas del día. Por favor, intenta más tarde."
+              );
+            }
+          } else {
+            // Fecha inválida
+            console.log(`\n❌ FECHA INVÁLIDA EN EL COMANDO\n`);
             await enviarMensajeSeguro(
               client,
               userId,
-              "❌ Error al obtener las citas del día. Por favor, intenta más tarde."
+              "❌ Formato de fecha inválido.\n\n" +
+              "Formato correcto: `citas_dd/MM/yyyy`\n\n" +
+              "Ejemplos:\n" +
+              "• `citas_03/01/2025` - Citas del 3 de enero de 2025\n" +
+              "• `citas_15/12/2024` - Citas del 15 de diciembre de 2024\n" +
+              "• `citas_01/02/2025` - Citas del 1 de febrero de 2025"
             );
+            logMessage("WARNING", `Comando de citas con fecha inválida`, {
+              userId: extraerNumero(userId),
+              mensaje: text,
+              fechaStr: fechaStr
+            });
           }
-          return;
+          return; // IMPORTANTE: Salir inmediatamente después de procesar el comando
         }
 
         // Comando: Desactivar IA
@@ -3240,8 +3516,11 @@ async function start(client) {
 
       // ============================================
       // DETECCIÓN DE RESERVA (siempre activa)
+      // NOTA: Los comandos de administrador ya fueron procesados arriba
       // ============================================
+      // Excluir administradores de la detección automática de reserva
       if (
+        !esAdministrador(userId) &&
         detectarIntencionReserva(textLower) &&
         storage.getUserState(userId) !== "reserva"
       ) {
@@ -3388,6 +3667,47 @@ async function start(client) {
       // TODO SE PROCESA CON IA - SIN MENÚ ESTRUCTURADO
       // ============================================
       // El código de reserva ya se maneja arriba, aquí solo procesamos con IA
+      
+      // IMPORTANTE: Si es administrador y no se procesó ningún comando, 
+      // NO procesar con IA - los administradores solo usan comandos
+      if (esAdmin) {
+        console.log(`\n⚠️ ADMINISTRADOR ENVIÓ MENSAJE PERO NO SE DETECTÓ COMANDO`);
+        console.log(`   Mensaje: "${text}"`);
+        console.log(`   TextLower: "${textLower}"`);
+        console.log(`   NO se procesará con IA\n`);
+        
+        // Si es administrador y el mensaje parece un comando pero no se procesó,
+        // mostrar ayuda en lugar de procesar con IA
+        const pareceComando = 
+          textLower.includes("citas") || 
+          textLower.includes("reservas") || 
+          textLower.includes("estadisticas") || 
+          textLower.includes("stats") ||
+          textLower.includes("ia") ||
+          textLower.includes("bot");
+        
+        if (pareceComando) {
+          logMessage("WARNING", `⚠️ Administrador envió mensaje que parece comando pero no se procesó`, {
+            userId: extraerNumero(userId),
+            mensaje: text,
+            textLower: textLower
+          });
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            "❓ No reconocí ese comando. Comandos disponibles:\n\n" +
+            "• `citas_hoy` o `citas de hoy` - Ver citas del día\n" +
+            "• `estadisticas` o `stats` - Ver estadísticas\n" +
+            "• `activar ia` / `desactivar ia` - Controlar IA\n" +
+            "• `estado ia` - Ver estado de la IA"
+          );
+          return; // Salir para no procesar con IA
+        } else {
+          // Si no parece comando, también evitar IA para administradores
+          logMessage("INFO", `Administrador envió mensaje que no es comando - ignorando`);
+          return; // Los administradores solo usan comandos, no conversación con IA
+        }
+      }
 
       // Respuesta por defecto - SIEMPRE usar IA primero
       logMessage("INFO", `Usuario ${userName} envió mensaje - Consultando IA`, {
