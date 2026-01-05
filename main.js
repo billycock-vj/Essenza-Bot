@@ -228,8 +228,7 @@ const wppconnect = require("@wppconnect-team/wppconnect");
 const qrcode = require("qrcode-terminal");
 const fs = require("fs");
 const path = require("path");
-const OpenAI = require("openai");
-const PQueue = require('p-queue').default;
+// OpenAI y PQueue ahora están en handlers/ai.js
 
 // ============================================
 // MÓDULOS
@@ -243,11 +242,26 @@ const {
   validarServicio, 
   sanitizarMensaje, 
   sanitizarDatosParaLog,
-  obtenerHorarioDelDia
+  obtenerHorarioDelDia,
+  fuzzyMatch
 } = require('./utils/validators');
 const persistence = require('./services/persistence');
 const storage = require('./services/storage');
 const db = require('./services/database');
+
+// ============================================
+// HANDLERS MODULARES
+// ============================================
+const adminHandler = require('./handlers/admin');
+const clientHandler = require('./handlers/client');
+const reservationHandler = require('./handlers/reservation');
+const clientCommandsHandler = require('./handlers/clientCommands');
+const autoConfirmationHandler = require('./handlers/autoConfirmation');
+const imageHandler = require('./handlers/image');
+const aiHandler = require('./handlers/ai');
+const remindersHandler = require('./handlers/reminders');
+const { enviarMensajeSeguro, extraerNumero, inicializarUsuario, extractName } = require('./handlers/messageHelpers');
+const { getSaludoPorHora, getRespuestaVariada, detectSaludo } = require('./utils/responses');
 
 // ============================================
 // CONFIGURACIÓN (desde módulo)
@@ -279,8 +293,7 @@ if (typeof inicializarServidorQR === 'function' && !qrServer) {
 // Control de IA global (solo admin puede activar/desactivar)
 let iaGlobalDesactivada = false;
 
-// Control de rate limiting para OpenAI (cola de peticiones)
-const queue = new PQueue({ concurrency: 1, interval: 1000, intervalCap: 1 });
+// Control de rate limiting para OpenAI ahora está en handlers/ai.js
 
 // Array para guardar referencias de intervalos y limpiarlos al salir
 const intervals = [];
@@ -339,124 +352,12 @@ if (userDataCargado) {
 // ============================================
 // FUNCIONES AUXILIARES
 // ============================================
-
-// Función para verificar si un usuario es administrador
-function esAdministrador(userId) {
-  if (!userId) {
-    console.log(`❌ esAdministrador: userId vacío`);
-    return false;
-  }
-  
-  // Extraer número sin sufijo para comparación
-  const numeroUsuario = extraerNumero(userId);
-  const numerosAdmin = ADMIN_NUMBERS.map(n => extraerNumero(n));
-  
-  console.log(`\n🔍 VERIFICANDO ADMINISTRADOR:`);
-  console.log(`   UserId recibido: "${userId}"`);
-  console.log(`   Número extraído: "${numeroUsuario}"`);
-  console.log(`   Números admin configurados:`, numerosAdmin);
-  console.log(`   Admin numbers completos:`, ADMIN_NUMBERS);
-  console.log(`   ADMIN_NUMBERS_SIN_SUFIJO:`, ADMIN_NUMBERS_SIN_SUFIJO);
-  
-  // Verificar coincidencia exacta del userId completo
-  if (ADMIN_NUMBERS.includes(userId)) {
-    console.log(`✅ ADMINISTRADOR DETECTADO (coincidencia exacta userId)`);
-    return true;
-  }
-  
-  // Verificar por número sin sufijo
-  if (numerosAdmin.includes(numeroUsuario)) {
-    console.log(`✅ ADMINISTRADOR DETECTADO (coincidencia por número)`);
-    return true;
-  }
-  
-  // Verificar también con diferentes formatos posibles
-  const numeroSinPrefijo = numeroUsuario.replace(/^\+?/, ''); // Quitar + si existe
-  const numerosAdminSinPrefijo = numerosAdmin.map(n => n.replace(/^\+?/, ''));
-  
-  if (numerosAdminSinPrefijo.includes(numeroSinPrefijo)) {
-    console.log(`✅ ADMINISTRADOR DETECTADO (coincidencia sin prefijo)`);
-    return true;
-  }
-  
-  // Verificar si el número termina con alguno de los números admin (para casos como 260602106781739 que contiene 972002363)
-  // O si algún número admin está contenido en el número del usuario
-  // También verificar con ADMIN_NUMBERS_SIN_SUFIJO que incluye variantes con y sin código de país
-  const todosLosNumerosAdmin = ADMIN_NUMBERS_SIN_SUFIJO || numerosAdmin;
-  
-  for (const numAdmin of todosLosNumerosAdmin) {
-    const numAdminSinPrefijo = numAdmin.replace(/^\+?/, '').replace(/^51/, ''); // Quitar + y código 51
-    const numUsuarioSinPrefijo = numeroSinPrefijo.replace(/^51/, ''); // Quitar código 51 si existe
-    
-    // Verificar coincidencia exacta sin prefijos
-    if (numUsuarioSinPrefijo === numAdminSinPrefijo) {
-      console.log(`✅ ADMINISTRADOR DETECTADO (coincidencia sin prefijos)`);
-      console.log(`   Número usuario (sin prefijos): "${numUsuarioSinPrefijo}"`);
-      console.log(`   Número admin (sin prefijos): "${numAdminSinPrefijo}"`);
-      return true;
-    }
-    
-    // Verificar si el número admin está al final del número del usuario (últimos 9 dígitos)
-    if (numUsuarioSinPrefijo.length >= 9 && numAdminSinPrefijo.length >= 9) {
-      const ultimos9Usuario = numUsuarioSinPrefijo.slice(-9);
-      const ultimos9Admin = numAdminSinPrefijo.slice(-9);
-      if (ultimos9Usuario === ultimos9Admin) {
-        console.log(`✅ ADMINISTRADOR DETECTADO (coincidencia últimos 9 dígitos)`);
-        console.log(`   Últimos 9 dígitos usuario: "${ultimos9Usuario}"`);
-        console.log(`   Últimos 9 dígitos admin: "${ultimos9Admin}"`);
-        return true;
-      }
-    }
-    
-    // Verificar si contiene el número admin (para casos donde el userId es un ID largo)
-    // Especialmente útil para números como 260602106781739 que pueden contener 972002363
-    if (numUsuarioSinPrefijo.includes(numAdminSinPrefijo) || 
-        numAdminSinPrefijo.includes(numUsuarioSinPrefijo)) {
-      console.log(`✅ ADMINISTRADOR DETECTADO (coincidencia parcial)`);
-      console.log(`   Número usuario: "${numUsuarioSinPrefijo}"`);
-      console.log(`   Número admin: "${numAdminSinPrefijo}"`);
-      return true;
-    }
-    
-    // Verificar si los últimos dígitos del número admin coinciden con los últimos dígitos del userId
-    // Esto es útil cuando WhatsApp usa IDs largos pero mantiene los últimos dígitos del número real
-    if (numAdminSinPrefijo.length >= 6 && numUsuarioSinPrefijo.length >= numAdminSinPrefijo.length) {
-      const ultimosDigitosAdmin = numAdminSinPrefijo.slice(-6); // Últimos 6 dígitos
-      const ultimosDigitosUsuario = numUsuarioSinPrefijo.slice(-6);
-      if (ultimosDigitosUsuario === ultimosDigitosAdmin) {
-        console.log(`✅ ADMINISTRADOR DETECTADO (coincidencia últimos 6 dígitos)`);
-        console.log(`   Últimos 6 dígitos usuario: "${ultimosDigitosUsuario}"`);
-        console.log(`   Últimos 6 dígitos admin: "${ultimosDigitosAdmin}"`);
-        return true;
-      }
-    }
-  }
-  
-  console.log(`❌ NO ES ADMINISTRADOR`);
-  console.log(`   Comparación falló para: "${numeroUsuario}"`);
-  console.log(`   No coincide con:`, numerosAdmin);
-  
-  return false;
-}
+// Las funciones auxiliares ahora están en los handlers modulares
+// Usar referencias a los handlers:
+const esAdministrador = adminHandler.esAdministrador;
 
 // Función helper para inicializar objetos de usuario (usando storage)
-function inicializarUsuario(userId) {
-  if (!storage.getUserData(userId)) {
-    storage.setUserData(userId, {
-      bienvenidaEnviada: false,
-      saludoEnviado: false,
-      ultimaInteraccion: null
-    });
-  }
-  
-  if (!storage.getHistorial(userId) || storage.getHistorial(userId).length === 0) {
-    storage.setHistorial(userId, []);
-  }
-  
-  if (storage.getUserState(userId) === undefined) {
-    storage.setUserState(userId, null);
-  }
-}
+// Ahora está en handlers/messageHelpers.js - usar inicializarUsuario importado arriba
 
 // Función para calcular tokens aproximados (1 token ≈ 4 caracteres)
 function calcularTokens(mensaje) {
@@ -480,121 +381,11 @@ function limitarHistorialPorTokens(historial, maxTokens = 2000) {
   return historialLimitado;
 }
 
-// Fuzzy matching para errores de escritura
-function fuzzyMatch(input, target, threshold = 0.7) {
-  const inputLower = input.toLowerCase();
-  const targetLower = target.toLowerCase();
+// Fuzzy matching ahora está en utils/validators.js
 
-  if (inputLower === targetLower) return true;
-  if (inputLower.includes(targetLower) || targetLower.includes(inputLower))
-    return true;
-
-  // Calcular similitud simple (Levenshtein simplificado)
-  let matches = 0;
-  const minLen = Math.min(inputLower.length, targetLower.length);
-  for (let i = 0; i < minLen; i++) {
-    if (inputLower[i] === targetLower[i]) matches++;
-  }
-  return matches / Math.max(inputLower.length, targetLower.length) >= threshold;
-}
-
-// Detectar saludos
-function detectSaludo(text) {
-  const saludos = {
-    buenosDias: [
-      "buenos días",
-      "buen día",
-      "buenos dias",
-      "buen dia",
-      "día",
-      "dia",
-    ],
-    buenasTardes: ["buenas tardes", "buena tarde", "tarde"],
-    buenasNoches: ["buenas noches", "buena noche", "noche"],
-    hola: ["hola", "holaa", "holaaa", "hi", "hey", "que tal", "qué tal"],
-    gracias: ["gracias", "gracia", "gracías", "grax", "thx", "thanks"],
-    adios: [
-      "adiós",
-      "adios",
-      "chau",
-      "chao",
-      "hasta luego",
-      "nos vemos",
-      "bye",
-    ],
-  };
-
-  for (const [tipo, variantes] of Object.entries(saludos)) {
-    for (const variante of variantes) {
-      if (fuzzyMatch(text, variante)) {
-        return tipo;
-      }
-    }
-  }
-  return null;
-}
-
-// Obtener saludo según hora del día
-function getSaludoPorHora() {
-  const hora = new Date().getHours();
-  if (hora >= 5 && hora < 12) return "Buenos días";
-  if (hora >= 12 && hora < 19) return "Buenas tardes";
-  return "Buenas noches";
-}
-
-// Respuestas variadas
-function getRespuestaVariada(tipo) {
-  const respuestas = {
-    buenosDias: [
-      "¡Buenos días! ☀️ ¿En qué puedo ayudarte hoy?",
-      "¡Buenos días! Espero que tengas un excelente día. ¿Cómo puedo asistirte?",
-      "Buenos días 🌅 ¿Te gustaría ver nuestro menú de servicios?",
-    ],
-    buenasTardes: [
-      "¡Buenas tardes! 😊 ¿En qué puedo ayudarte?",
-      "Buenas tardes 🌤️ ¿Hay algo en lo que pueda asistirte?",
-      "¡Buenas tardes! ¿Te interesa conocer nuestros servicios?",
-    ],
-    buenasNoches: [
-      "¡Buenas noches! 🌙 ¿En qué puedo ayudarte?",
-      "Buenas noches ⭐ ¿Hay algo que necesites?",
-      "¡Buenas noches! ¿Te gustaría ver nuestras opciones?",
-    ],
-    gracias: [
-      "¡De nada! 😊 Estoy aquí para ayudarte cuando lo necesites.",
-      "¡Con mucho gusto! 🌿 Si necesitas algo más, no dudes en escribirme.",
-      "¡Por supuesto! 💚 Fue un placer ayudarte.",
-      "¡De nada! Si tienes más preguntas, estaré aquí. 👋",
-    ],
-    adios: [
-      "¡Hasta luego! 👋 Que tengas un excelente día.",
-      "¡Chau! 😊 Espero verte pronto en Essenza Spa.",
-      "¡Nos vemos! 💚 Cuídate mucho.",
-      "¡Hasta pronto! 🌿 Fue un placer atenderte.",
-    ],
-  };
-
-  const opciones = respuestas[tipo] || respuestas.gracias;
-  return opciones[Math.floor(Math.random() * opciones.length)];
-}
-
-// Extraer nombre del mensaje (mejorado con más patrones)
-function extractName(text) {
-  const patterns = [
-    /(?:me llamo|mi nombre es|soy|yo soy)\s+([a-záéíóúñ\s]+)/i,
-    /(?:nombre|name)[\s:]+([a-záéíóúñ\s]+)/i,
-    /(?:me llaman|me dicen)\s+([a-záéíóúñ\s]+)/i,
-    /(?:puedes llamarme|llámame)\s+([a-záéíóúñ\s]+)/i,
-  ];
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match && match[1]) {
-      return match[1].trim().split(/\s+/)[0]; // Primer nombre
-    }
-  }
-  return null;
-}
+// Funciones de respuestas y helpers ahora están en los handlers modulares
+// detectSaludo, getSaludoPorHora, getRespuestaVariada están en utils/responses.js
+// extractName está en handlers/messageHelpers.js
 
 // ============================================
 // DETECCIÓN DE CONSULTAS EN LENGUAJE NATURAL
@@ -821,82 +612,8 @@ function detectarConsultaServicio(texto) {
   return null;
 }
 
-// Función para detectar intención de reserva en lenguaje natural
-function detectarIntencionReserva(texto) {
-  const textoLower = texto.toLowerCase().trim();
-
-  // Excluir comandos de administrador que contienen "citas" o "reservas"
-  const comandosAdmin = [
-    "citas de hoy",
-    "citas hoy",
-    "reservas de hoy",
-    "reservas hoy",
-    "estadisticas",
-    "stats",
-    "estadísticas"
-  ];
-  
-  // Si es un comando de administrador, no es una reserva
-  if (comandosAdmin.some(cmd => textoLower === cmd || textoLower.includes(cmd))) {
-    return false;
-  }
-
-  const palabrasReserva = [
-    "reservar",
-    "reserva",
-    "agendar",
-    "agenda",
-    "programar",
-    "quiero reservar",
-    "deseo reservar",
-    "necesito reservar",
-    "hacer una cita",
-    "sacar cita",
-    "pedir cita",
-    "solicitar cita",
-    "disponibilidad",
-    "horarios disponibles",
-    "cuándo",
-    "cuando",
-    "quiero una cita",
-    "necesito cita",
-    "puedo reservar",
-    "puedo agendar",
-    "quiero agendar",
-    "deseo agendar",
-    "necesito agendar",
-  ];
-
-  // Solo detectar "cita" si NO es parte de "citas de hoy" o "citas hoy"
-  const tieneCita = textoLower.includes("cita");
-  const esComandoCitas = textoLower.includes("citas de hoy") || 
-                         textoLower.includes("citas hoy") ||
-                         textoLower === "citas de hoy" ||
-                         textoLower === "citas hoy";
-  
-  if (tieneCita && !esComandoCitas) {
-    // Verificar que sea una intención real de reserva, no una consulta
-    const esIntencionReserva = palabrasReserva.some((palabra) => {
-      if (palabra === "cita") return false; // Ya lo manejamos arriba
-      return textoLower.includes(palabra);
-    });
-    
-    // Si tiene "cita" y también tiene palabras de intención, es reserva
-    if (esIntencionReserva) {
-      return true;
-    }
-    
-    // Si solo tiene "cita" pero con contexto de solicitud
-    const contextoReserva = ["quiero", "deseo", "necesito", "puedo", "hacer", "sacar", "pedir", "solicitar"];
-    if (contextoReserva.some(ctx => textoLower.includes(ctx))) {
-      return true;
-    }
-    
-    return false;
-  }
-
-  return palabrasReserva.some((palabra) => textoLower.includes(palabra));
-}
+// Función para detectar intención de reserva ahora está en handlers/reservation.js
+const detectarIntencionReserva = reservationHandler.detectarIntencionReserva;
 
 // Función para detectar consulta sobre promociones
 function detectarConsultaPromocion(texto) {
@@ -1152,523 +869,27 @@ function extraerFechaHora(texto) {
 // ============================================
 // FUNCIÓN PARA CONSULTAR IA
 // ============================================
-async function consultarIA(mensajeUsuario, contextoUsuario = {}) {
-  if (!openai) {
-    return null; // Si no hay API key, retornar null
-  }
-
-  // Usar cola de peticiones para rate limiting (1 petición por segundo)
-  return await queue.add(async () => {
-
-  try {
-    // Prompt consolidado para Essenza AI
-    const contextoNegocio = `Eres Essenza AI, asistente virtual del spa ESSENZA. Responde en español peruano, de forma cálida, relajante, profesional y humana. Debes sonar amable, no robótico, usar el nombre del cliente cuando lo conozcas.
-
-REGLA CRÍTICA SOBRE SALUDOS:
-- Si "Ya se saludó antes" es true en el contexto, NUNCA debes saludar de nuevo. NO uses "Hola", "Buenos días", "Buenas tardes", ni ningún saludo.
-- Si "Ya se saludó antes" es false, puedes saludar solo una vez al inicio.
-- NUNCA repitas saludos en la misma conversación, incluso si el usuario escribe "hola" de nuevo.
-
-Tu meta final: resolver dudas, recomendar servicios, y cerrar reserva con depósito confirmado.
-
-INFORMACIÓN DEL SPA
-
-Nombre del bot: Essenza AI
-Tipo: Asistente virtual del spa ESSENZA
-Ubicación: Jiron Ricardo Palma 603, Puente Piedra, Lima, Perú
-Mapa: ${MAPS_LINK} (mantener como link clicable)
-
-Horario de atención:
-- Lunes a Jueves: 11:00 - 19:00
-- Viernes: 11:00 - 19:00
-- Sábado: 10:00 - 16:00
-- Domingo: Cerrado
-
-IMPORTANTE - HORARIO ESPECÍFICO POR DÍA:
-Cuando el usuario mencione "mañana", "hoy", o una fecha específica, DEBES verificar qué día de la semana es y dar el horario CORRECTO de ese día:
-- Si es Lunes, Martes, Miércoles o Jueves: 11:00 - 19:00
-- Si es Viernes: 11:00 - 19:00
-- Si es Sábado: 10:00 - 16:00
-- Si es Domingo: Cerrado (no hay atención)
-
-Ejemplo: Si el usuario pregunta "¿qué horario tienen mañana?" y mañana es Sábado, debes decir "10:00 - 16:00", NO "11:00 - 19:00".
-
-MÉTODOS DE PAGO Y DEPÓSITO
-
-Depósito obligatorio para reservar:
-- Si el servicio cuesta menos de 50 soles: depósito 10
-- Si el servicio cuesta 50 o más: depósito 20
-- Si un servicio está con precio promocional en diciembre, el depósito se calcula con el precio promocional
-- Si el cliente elige más de un servicio o combo, el depósito se calcula basado en el total final
-
-Métodos de pago:
-- Yape ${YAPE_NUMERO} (Titular Esther Ocaña Baron)
-- BCP ${BANCO_CUENTA}
-
-El depósito se descuenta del total del servicio.
-
-SERVICIOS CON PRECIOS (ACTUALIZADOS)
-
-MASAJES BÁSICOS (45-60 minutos):
-- Masaje Relajante: S/35
-- Masaje Descontracturante: S/35
-- Masaje Terapéutico: S/45
-
-MASAJES COMPUESTOS (45-60 minutos):
-- Relajante + Piedras Calientes: S/50 (Combina calor y masaje)
-- Descontracturante + Electroterapia: S/50 (Estimulación eléctrica, potencia el masaje)
-- Descontracturante + Esferas Chinas: S/40 (Acupresión con esferas, reduce el dolor)
-- Terapéutico + Compresas + Electroterapia: S/60 (Tratamiento integral, acelera recuperación)
-
-FISIOTERAPIA Y TERAPIAS:
-- Evaluación + Tratamiento de Fisioterapia: S/50 (60 minutos)
-- Fisioterapia terapéutica
-- Rehabilitación muscular y articular
-- Alivio de dolores cervicales y lumbares
-- Terapia para estrés y tensión corporal
-
-TRATAMIENTOS FACIALES:
-- Limpieza Facial Básica: S/30 (60 minutos)
-- Limpieza Facial Profunda: S/60 (60-90 minutos)
-- Parálisis Facial + Consulta: S/50 (60 minutos)
-
-OTROS SERVICIOS:
-- Manicura y Pedicura: Consultar precio (90 minutos)
-- Extensiones de Pestañas: Consultar precio (120 minutos)
-- Diseño de Cejas: Consultar precio (30 minutos)
-
-PAQUETES MENSUALES (IDEALES PARA MANTENIMIENTO):
-
-1. PAQUETE RELAJACIÓN: S/80
-   - 3 masajes relajantes
-   - Ideal para estrés y descanso
-
-2. PAQUETE BIENESTAR: S/100
-   - 4 masajes terapéuticos
-   - Para mantenimiento muscular
-
-3. PAQUETE RECUPERACIÓN: S/140
-   - 4 sesiones de fisioterapia
-   - Ideal para dolores recurrentes
-
-PAQUETES PARA DOS PERSONAS:
-
-1. PAQUETE ARMÓNICO: S/140 (2 personas)
-   Incluye:
-   - Masaje con pindas herbales
-   - Compresas calientes
-   - Reflexología
-   - Exfoliación corporal
-   - Fangoterapia
-   - Musicaterapia/aromaterapia
-   - Copa de vino 🍷 / mate ☕
-   - Snack de frutas
-
-2. PAQUETE AMOR: S/150 (2 personas)
-   Incluye:
-   - Masaje relajante/descontracturante
-   - Piedras calientes
-   - Reflexología
-   - Exfoliación corporal
-   - Limpieza facial
-   - Aromaterapia/musicaterapia
-   - Copa de vino
-   - Snack de frutas y alfajores
-   - Decoración romántica
-
-NOTA IMPORTANTE SOBRE PRECIOS:
-- Todos los precios mostrados son los precios actuales y correctos
-- Los paquetes son ideales para ahorrar y tener tratamientos regulares
-- Los paquetes para dos personas son perfectos para parejas o amigos
-
-RECOMENDACIONES INTELIGENTES
-
-El bot debe responder según necesidad:
-- Dolor fuerte → Masaje Terapéutico, Terapéutico + Compresas + Electroterapia, Fisioterapia, Paquete Recuperación (S/140 - 4 sesiones)
-- Dolor recurrente → Paquete Recuperación (S/140 - 4 sesiones de fisioterapia)
-- Estrés → Masaje Relajante, Relajante + Piedras Calientes, Paquete Relajación (S/80 - 3 masajes)
-- Tensión muscular → Masaje Descontracturante, Descontracturante + Electroterapia, Descontracturante + Esferas Chinas
-- Mantenimiento muscular → Paquete Bienestar (S/100 - 4 masajes terapéuticos)
-- Piel → Limpieza Facial Básica o Profunda
-- Relajación profunda → Relajante + Piedras Calientes, Reflexología
-- Para dos personas → Paquete Armónico (S/140) o Paquete Amor (S/150)
-- Parejas románticas → Paquete Amor (S/150) - incluye decoración romántica, vino, frutas
-
-FLUJO DE CONVERSACIÓN
-
-1. Saluda una sola vez SOLO si "Ya se saludó antes" es false. Si ya se saludó, omite el saludo completamente.
-2. Pregunta necesidad con diagnóstico rápido:
-   - "¿Tienes dolor o deseas relajación?"
-   - "¿Qué zona del cuerpo duele o deseas tratar?"
-   - "¿Intenso o suave?"
-3. Recomienda servicio o combo ideal
-4. Pide fecha y hora de preferencia
-5. Ofrece separar con depósito calculado automáticamente
-6. Confirma reserva con alegría
-
-OBJECIONES
-
-"Es caro" → Ofrecer paquetes mensuales (ahorran dinero), masajes básicos (S/35), o paquetes para dos personas (mejor precio por persona)
-"Estoy dudando" → Generar urgencia suave, mencionar beneficios de los paquetes
-"No quiero depósito" → Explicar que asegura el espacio y se descuenta del total
-"Quiero para dos" → Sugerir Paquete Armónico (S/140) o Paquete Amor (S/150) - ambos incluyen múltiples servicios
-"Quiero algo romántico" → Recomendar Paquete Amor (S/150) - incluye decoración romántica, vino, frutas
-"Tengo dolor recurrente" → Recomendar Paquete Recuperación (S/140 - 4 sesiones de fisioterapia)
-"Quiero mantenimiento" → Recomendar Paquete Bienestar (S/100 - 4 masajes terapéuticos)
-"Quiero relajarme regularmente" → Recomendar Paquete Relajación (S/80 - 3 masajes relajantes)
-"Quiero hablar con alguien" → Responder exactamente:
-"Claro, te comunico con un asesor humano en un momento"
-y el bot deja de hablar, no agrega nada más.
-
-CONTEXTO DE LA CONVERSACIÓN:
-- Estado actual: ${contextoUsuario.estado || "conversacion"}
-- Nombre del usuario: ${contextoUsuario.nombre || "Usuario"}
-- Tipo de consulta: ${contextoUsuario.tipoConsulta || "general"}
-- Fecha actual: ${new Date().toLocaleDateString("es-PE", {
-      timeZone: "America/Lima",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      weekday: "long"
-    })}
-- Ya se saludó antes: ${contextoUsuario.yaSaludo || false}
-${(() => {
-  // Calcular información de mañana para el contexto
-  const mañana = new Date();
-  mañana.setDate(mañana.getDate() + 1);
-  const horarioMañana = obtenerHorarioDelDia(mañana);
-  const nombreDiaMañana = mañana.toLocaleDateString('es-PE', { 
-    weekday: 'long',
-    timeZone: 'America/Lima'
-  });
-  
-  if (horarioMañana.abierto) {
-    return `- Mañana (${nombreDiaMañana.charAt(0).toUpperCase() + nombreDiaMañana.slice(1)}): Horario ${horarioMañana.apertura}:00 - ${horarioMañana.cierre}:00`;
-  } else {
-    return `- Mañana (${nombreDiaMañana.charAt(0).toUpperCase() + nombreDiaMañana.slice(1)}): ${horarioMañana.mensaje || 'Cerrado'}`;
-  }
-})()}
-
-REGLA CRÍTICA SOBRE SALUDOS:
-- Si "Ya se saludó antes" es true, NO debes saludar de nuevo. NO uses "Hola", "Buenos días", "Buenas tardes", ni ningún saludo.
-- Si "Ya se saludó antes" es false, puedes saludar solo una vez.
-- NUNCA repitas saludos en la misma conversación.
-
-REGLA ANTI ALUCINACIÓN:
-Si la IA no sabe algo responde:
-"No tengo esa información exacta disponible, pero puedo consultar con un asesor humano si deseas."
-
-REGLA CRÍTICA SOBRE MEMORIA Y CONTEXTO:
-- Tienes acceso al historial de la conversación anterior. ÚSALO.
-- NO repitas preguntas que ya fueron respondidas.
-- Si el usuario ya dijo "tengo dolor en la lumbar", NO vuelvas a preguntar "¿qué zona del cuerpo?"
-- Si el usuario ya dijo "intenso", NO vuelvas a preguntar "¿intenso o suave?"
-- Si el usuario ya mencionó una fecha/hora, NO vuelvas a preguntar por fecha/hora.
-- RECUERDA la información que el usuario ya compartió y avanza en el flujo.
-- Si ya recomendaste un servicio, NO vuelvas a preguntar lo mismo, avanza al siguiente paso (fecha, depósito, etc.).
-
-Meta final del bot: resolver dudas, recomendar, cerrar reserva.`;
-
-    // Construir array de mensajes con historial
-    const messages = [
-      {
-        role: "system",
-        content: contextoNegocio,
-      },
-    ];
-
-    // Agregar historial de conversación si existe (últimos 8 mensajes para mantener contexto)
-    const historial = contextoUsuario.historial || [];
-    if (historial.length > 0) {
-      // Agregar solo los últimos 8 mensajes para no exceder tokens
-      const historialReciente = historial.slice(-8);
-      messages.push(...historialReciente);
-    }
-
-    // Agregar el mensaje actual
-    messages.push({
-      role: "user",
-      content: mensajeUsuario,
-    });
-
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini", // Modelo económico y rápido
-      messages: messages,
-      max_tokens: 500, // Respuestas más completas y detalladas
-      temperature: 0.8, // Más creatividad y naturalidad
-    });
-
-    // Validar respuesta de OpenAI
-    if (!completion?.choices?.[0]?.message?.content) {
-      logMessage("ERROR", "Respuesta inválida de OpenAI", {
-        completion: JSON.stringify(completion).substring(0, 200)
-      });
-      return null;
-    }
-
-    const respuesta = completion.choices[0].message.content.trim();
-    if (!respuesta || respuesta.length === 0) {
-      logMessage("WARNING", "Respuesta vacía de OpenAI");
-      return null;
-    }
-
-    return respuesta;
-  } catch (error) {
-    logMessage("ERROR", "Error al consultar IA", {
-      error: error.message,
-    });
-    return null; // Si hay error, retornar null para usar respuesta por defecto
-  }
-  });
-}
+// Ahora está en handlers/ai.js
+const consultarIA = aiHandler.consultarIA;
 
 // MAX_RESERVAS ya está definido en config
 
 // Funciones validarFecha y validarServicio ahora vienen del módulo utils/validators
 
-// Guardar reserva para recordatorio
-function guardarReserva(userId, userName, servicio, fechaHora, duracionMinutos = 60) {
-  // Validar fecha y horario de atención
-  const validacionFecha = validarFecha(fechaHora, duracionMinutos);
-  if (!validacionFecha.valida) {
-    logMessage("ERROR", `Error al guardar reserva: ${validacionFecha.error}`, {
-      userId: userId,
-      servicio: servicio,
-      fechaHora: fechaHora,
-      duracion: duracionMinutos
-    });
-    return { exito: false, error: validacionFecha.error };
-  }
-  
-  // Validar servicio (opcional, pero recomendado)
-  const validacionServicio = validarServicio(servicio);
-  if (!validacionServicio.existe && LOG_LEVEL === 'verbose') {
-    logMessage("WARNING", `Servicio no encontrado en base de datos`, {
-      servicio: servicio
-    });
-  }
-  
-  const reserva = {
-    userId,
-    userName,
-    servicio,
-    fechaHora: validacionFecha.fecha,
-    notificado: false,
-    creada: new Date(),
-  };
-  
-  // Si se alcanza el límite, eliminar las más antiguas
-  const reservas = storage.getReservas();
-  if (reservas.length >= MAX_RESERVAS) {
-    reservas.sort((a, b) => a.creada - b.creada);
-    reservas.splice(0, reservas.length - MAX_RESERVAS + 1);
-    logMessage("WARNING", `Límite de reservas alcanzado, eliminando las más antiguas`);
-  }
-  
-  storage.addReserva(reserva);
-  // Guardar persistencia
-  persistence.guardarReservas(storage.getReservas());
-  logMessage("INFO", `Reserva guardada para recordatorio`, { 
-    servicio: reserva.servicio,
-    fechaHora: reserva.fechaHora.toISOString(),
-    duracion: duracionMinutos
-  });
-  
-  return { exito: true, reserva: reserva };
-}
+// Funciones de recordatorios ahora están en handlers/reminders.js
+const guardarReserva = remindersHandler.guardarReserva;
+const verificarRecordatorios = remindersHandler.verificarRecordatorios;
 
-// Verificar y enviar recordatorios
-async function verificarRecordatorios(client) {
-  try {
-    const ahora = new Date();
-    const en24Horas = new Date(ahora.getTime() + 24 * 60 * 60 * 1000);
-    
-    // Obtener reservas desde la base de datos
-    const reservas = await db.obtenerReservas({
-      estado: 'pendiente',
-      fechaDesde: ahora,
-      fechaHasta: en24Horas
-    });
-
-    for (const reserva of reservas) {
-    if (
-      !reserva.notificado &&
-      reserva.fechaHora <= en24Horas &&
-      reserva.fechaHora > ahora
-    ) {
-      try {
-        const horasRestantes = Math.round(
-          (reserva.fechaHora - ahora) / (1000 * 60 * 60)
-        );
-
-        // Validar que la reserva sea en el futuro
-        if (horasRestantes <= 0) {
-          logMessage("WARNING", `Reserva pasada detectada para ${reserva.userName}`, {
-            fechaHora: reserva.fechaHora,
-            ahora: ahora
-          });
-          reserva.notificado = true; // Marcar como notificado para no volver a intentar
-          continue;
-        }
-
-        await enviarMensajeSeguro(
-          client,
-          reserva.userId,
-          `🔔 *Recordatorio de Cita*\n\n` +
-            `Hola ${reserva.userName}! 👋\n\n` +
-            `Te recordamos que tienes una cita programada:\n` +
-            `📅 *Servicio:* ${reserva.servicio}\n` +
-            `⏰ *Fecha/Hora:* ${reserva.fechaHora.toLocaleString("es-PE")}\n` +
-            `⏳ *En aproximadamente ${horasRestantes} hora(s)*\n\n` +
-            `¡Te esperamos en Essenza Spa! 🌿`
-        );
-        // Actualizar en base de datos
-        await db.actualizarReserva(reserva.id, { notificado: true });
-        logMessage("SUCCESS", `Recordatorio enviado a ${reserva.userName}`);
-      } catch (error) {
-        logMessage("ERROR", `Error al enviar recordatorio`, {
-          error: error.message,
-        });
-      }
-    }
-  }
-
-    // Limpiar reservas antiguas (más de 7 días) - ahora se hace automáticamente con SQLite
-    // Las reservas se mantienen en la base de datos, no necesitamos limpiar manualmente
-    
-    // Sincronizar storage con base de datos para recordatorios
-    const reservasPendientes = await db.obtenerReservas({
-      estado: 'pendiente',
-      fechaDesde: ahora
-    });
-    storage.reservas = reservasPendientes.slice(0, MAX_RESERVAS);
-    
-  } catch (error) {
-    logMessage("ERROR", "Error al verificar recordatorios", {
-      error: error.message
-    });
-  }
-}
-
-// Consultar disponibilidad para una fecha
-async function consultarDisponibilidad(fecha, duracionMinima = 60) {
-  try {
-    const horariosDisponibles = await db.consultarDisponibilidad(fecha, duracionMinima);
-    return horariosDisponibles;
-  } catch (error) {
-    logMessage("ERROR", "Error al consultar disponibilidad", {
-      error: error.message,
-      fecha: fecha.toISOString()
-    });
-    return [];
-  }
-}
-
-// Formatear horarios disponibles para mostrar
-function formatearHorariosDisponibles(horarios) {
-  if (horarios.length === 0) {
-    return "❌ *No hay horarios disponibles* para esta fecha.";
-  }
-  
-  const horariosTexto = horarios.map((h, idx) => {
-    const hora = h.toLocaleTimeString("es-PE", { 
-      hour: "2-digit", 
-      minute: "2-digit" 
-    });
-    return `${idx + 1}. ${hora}`;
-  }).join("\n");
-  
-  return `✅ *Horarios disponibles:*\n\n${horariosTexto}\n\n💡 *Selecciona un horario escribiendo el número o la hora.*`;
-}
-
-// Obtener estadísticas
-function obtenerEstadisticas() {
-  const diasActivo = Math.floor(
-    (new Date() - estadisticas.inicio) / (1000 * 60 * 60 * 24)
-  );
-  return `
-📊 *ESTADÍSTICAS DEL BOT*
-
-👥 *Usuarios únicos atendidos:* ${estadisticas.usuariosAtendidos.size}
-💬 *Total de mensajes procesados:* ${estadisticas.totalMensajes}
-📅 *Reservas solicitadas:* ${estadisticas.reservasSolicitadas}
-🧑‍💼 *Modos asesor activados:* ${estadisticas.asesoresActivados}
-⏰ *Días activo:* ${diasActivo}
-📈 *Promedio mensajes/día:* ${
-    diasActivo > 0 ? Math.round(estadisticas.totalMensajes / diasActivo) : 0
-  }
-  `.trim();
-}
-
-// Obtener citas del día para administradores
-async function obtenerCitasDelDia(fecha = null) {
-  try {
-    const fechaConsulta = fecha || new Date();
-    const inicioDia = new Date(fechaConsulta);
-    inicioDia.setHours(0, 0, 0, 0);
-    const finDia = new Date(fechaConsulta);
-    finDia.setHours(23, 59, 59, 999);
-
-    const reservas = await db.obtenerReservas({
-      fechaDesde: inicioDia,
-      fechaHasta: finDia
-    });
-
-    if (reservas.length === 0) {
-      const fechaFormateada = fechaConsulta.toLocaleDateString('es-PE', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric'
-      });
-      return `📅 *CITAS DEL DÍA*\n\n${fechaFormateada}\n\n✅ No hay citas programadas para hoy.`;
-    }
-
-    // Ordenar por hora
-    reservas.sort((a, b) => a.fechaHora - b.fechaHora);
-
-    const fechaFormateada = fechaConsulta.toLocaleDateString('es-PE', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
-    });
-
-    let mensaje = `📅 *CITAS DEL DÍA*\n\n${fechaFormateada}\n\n`;
-    mensaje += `📋 *Total: ${reservas.length} cita(s)*\n\n`;
-
-    reservas.forEach((reserva, index) => {
-      const hora = reserva.fechaHora.toLocaleTimeString('es-PE', {
-        hour: '2-digit',
-        minute: '2-digit'
-      });
-      const estadoEmoji = reserva.estado === 'confirmada' ? '✅' : 
-                          reserva.estado === 'cancelada' ? '❌' : '⏳';
-      
-      mensaje += `${index + 1}. ${estadoEmoji} *${hora}*\n`;
-      mensaje += `   👤 ${reserva.userName}\n`;
-      mensaje += `   💆 ${reserva.servicio}\n`;
-      mensaje += `   ⏱️ ${reserva.duracion} min\n`;
-      mensaje += `   📱 ${extraerNumero(reserva.userId)}\n`;
-      if (reserva.deposito > 0) {
-        mensaje += `   💰 Depósito: S/ ${reserva.deposito}\n`;
-      }
-      mensaje += `   📊 Estado: ${reserva.estado}\n\n`;
-    });
-
-    return mensaje.trim();
-  } catch (error) {
-    logMessage("ERROR", "Error al obtener citas del día", {
-      error: error.message
-    });
-    return "❌ Error al obtener las citas del día. Por favor, intenta más tarde.";
-  }
-}
+// Funciones ahora están en los handlers modulares
+const consultarDisponibilidad = reservationHandler.consultarDisponibilidad;
+const formatearHorariosDisponibles = reservationHandler.formatearHorariosDisponibles;
+const obtenerEstadisticas = adminHandler.obtenerEstadisticas;
+const obtenerCitasDelDia = adminHandler.obtenerCitasDelDia;
 
 // ============================================
 // INICIALIZACIÓN DE OPENAI (se inicializará después de definir logMessage)
 // ============================================
-let openai = null;
+// openai ahora está en handlers/ai.js
 
 // ============================================
 // SISTEMA DE LOGS (desde módulo utils/logger.js)
@@ -1678,453 +899,19 @@ let openai = null;
 // ============================================
 // FUNCIÓN HELPER PARA ENVIAR MENSAJES DE FORMA SEGURA
 // ============================================
-// Función auxiliar para extraer el número sin el sufijo (@c.us o @lid)
-function extraerNumero(userId) {
-  if (!userId || typeof userId !== "string") return userId;
-  return userId.replace(/@(c\.us|lid)$/, "");
-}
+// Funciones ahora están en handlers/messageHelpers.js
+// extraerNumero y enviarMensajeSeguro ya están importadas arriba
 
 // ============================================
 // FUNCIONES PARA PROCESAR IMÁGENES CON OPENAI VISION
 // ============================================
-
-/**
- * Extrae datos de una cita desde una imagen usando OpenAI Vision
- * @param {Object} client - Cliente de wppconnect
- * @param {Object} message - Mensaje con imagen
- * @returns {Promise<Object|null>} - Datos extraídos de la imagen o null si hay error
- */
-async function extraerDatosCitaDeImagen(client, message) {
-  try {
-    logMessage("INFO", "Iniciando extracción de datos de imagen con OpenAI Vision", {
-      messageId: message.id,
-      type: message.type
-    });
-
-    // Descargar la imagen usando wppconnect
-    let base64Image;
-    try {
-      // En wppconnect v1.37.8, el método correcto es downloadMedia
-      // Verificar si el mensaje tiene mediaKey (necesario para descargar)
-      if (!message.mediaKey) {
-        logMessage("ERROR", "El mensaje no tiene mediaKey", {
-          messageId: message.id,
-          type: message.type
-        });
-        return null;
-      }
-
-      // Usar downloadMedia que es el método estándar en wppconnect
-      const mediaData = await client.downloadMedia(message);
-      
-      // Convertir Buffer a base64
-      if (Buffer.isBuffer(mediaData)) {
-        base64Image = mediaData.toString('base64');
-      } else if (typeof mediaData === 'string') {
-        // Si ya viene como base64 string
-        base64Image = mediaData.replace(/^data:image\/[^;]+;base64,/, '');
-      } else {
-        throw new Error('Formato de media no reconocido');
-      }
-    } catch (error) {
-      logMessage("ERROR", "Error al descargar imagen", {
-        error: error.message,
-        stack: error.stack,
-        messageId: message.id,
-        messageType: message.type,
-        hasMediaKey: !!message.mediaKey,
-        clientMethods: Object.keys(client).filter(k => k.toLowerCase().includes('media') || k.toLowerCase().includes('download'))
-      });
-      return null;
-    }
-    
-    if (!openai || !config.OPENAI_API_KEY) {
-      logMessage("ERROR", "OpenAI no está configurado");
-      return null;
-    }
-
-    // Usar OpenAI Vision para extraer información
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini", // o "gpt-4o" si tienes acceso
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: `Analiza esta imagen de una tarjeta de cita de spa y extrae TODA la información visible.
-
-Devuelve SOLO un JSON válido con esta estructura exacta:
-{
-  "fecha": "dd/MM/yyyy" o "dd/MM" si no hay año (ej: "03/01/2025" o "03/01"),
-  "hora": "HH:mm" en formato 24 horas (ej: "18:00" para 6 pm, "14:00" para 2 pm),
-  "servicio": "nombre exacto del servicio tal como aparece",
-  "precio": número sin símbolos (ej: 35 para "S/ 35"),
-  "nombreCliente": "nombre completo del cliente si aparece, null si no",
-  "telefonoCliente": "número de teléfono completo si aparece (con código de país si está), null si no",
-  "duracion": número en minutos si aparece (ej: 60), null si no
-}
-
-IMPORTANTE:
-- Si la fecha solo tiene día y mes (ej: "03/01"), no incluyas el año en el JSON
-- Convierte las horas de formato 12h (am/pm) a formato 24h
-- Si algún dato no está visible en la imagen, usa null para ese campo
-- Solo devuelve el JSON, sin texto adicional, sin markdown, sin explicaciones`
-            },
-            {
-              type: "image_url",
-              image_url: {
-                url: `data:image/jpeg;base64,${base64Image}`
-              }
-            }
-          ]
-        }
-      ],
-      max_tokens: 500,
-      temperature: 0.1 // Baja temperatura para respuestas más precisas
-    });
-    
-    const respuesta = response.choices[0].message.content.trim();
-    
-    // Extraer JSON de la respuesta (puede venir con markdown o texto adicional)
-    let jsonMatch = respuesta.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      // Intentar parsear directamente
-      jsonMatch = [respuesta];
-    }
-    
-    const datosCita = JSON.parse(jsonMatch[0]);
-    
-    logMessage("SUCCESS", "Datos extraídos de imagen exitosamente", {
-      datosCita: datosCita
-    });
-    
-    return datosCita;
-    
-  } catch (error) {
-    logMessage("ERROR", "Error al extraer datos de imagen", {
-      error: error.message,
-      stack: error.stack
-    });
-    return null;
-  }
-}
-
-/**
- * Crea una cita completa en la base de datos desde los datos extraídos
- * @param {Object} client - Cliente de wppconnect
- * @param {string} userIdAdmin - ID del administrador que crea la cita
- * @param {Object} datosCita - Datos extraídos de la imagen
- * @returns {Promise<Object>} - Resultado con idReserva o error
- */
-async function crearCitaCompleta(client, userIdAdmin, datosCita) {
-  try {
-    // Validar datos mínimos
-    if (!datosCita.fecha || !datosCita.hora || !datosCita.servicio) {
-      throw new Error('Faltan datos obligatorios: fecha, hora o servicio');
-    }
-
-    // Parsear fecha y hora
-    let fechaHora;
-    const partesFecha = datosCita.fecha.split('/');
-    if (partesFecha.length < 2) {
-      throw new Error('Formato de fecha inválido');
-    }
-
-    const dia = parseInt(partesFecha[0], 10);
-    const mes = parseInt(partesFecha[1], 10) - 1; // Meses en JS son 0-indexed
-    let año = partesFecha[2] ? parseInt(partesFecha[2], 10) : new Date().getFullYear();
-    
-    const [hora, minutos] = datosCita.hora.split(':').map(n => parseInt(n) || 0);
-    
-    fechaHora = new Date(año, mes, dia, hora, minutos);
-    
-    // Si la fecha ya pasó este año y no se especificó año, asumir próximo año
-    if (fechaHora < new Date() && !partesFecha[2]) {
-      fechaHora.setFullYear(año + 1);
-    }
-    
-    // Validar que la fecha es válida
-    if (fechaHora.getDate() !== dia || fechaHora.getMonth() !== mes) {
-      throw new Error('Fecha inválida (ej: 31/02)');
-    }
-    
-    // Obtener duración del servicio si no está en la imagen
-    let duracion = datosCita.duracion;
-    if (!duracion) {
-      const servicioInfo = Object.values(servicios)
-        .flatMap(s => s.opciones || [])
-        .find(s => s.nombre.toLowerCase() === datosCita.servicio.toLowerCase());
-      if (servicioInfo) {
-        const duracionMatch = servicioInfo.duracion.match(/\d+/);
-        duracion = duracionMatch ? parseInt(duracionMatch[0]) : 60;
-      } else {
-        duracion = 60; // Default
-      }
-    }
-    
-    // Formatear userId del cliente
-    let userIdCliente = datosCita.telefonoCliente;
-    if (!userIdCliente) {
-      throw new Error('Número de teléfono del cliente no encontrado en la imagen');
-    }
-    
-    // Limpiar y formatear número de teléfono
-    userIdCliente = userIdCliente.replace(/\D/g, ''); // Solo números
-    if (!userIdCliente.startsWith('51') && userIdCliente.length === 9) {
-      userIdCliente = '51' + userIdCliente; // Agregar código de país si falta
-    }
-    userIdCliente = userIdCliente + '@c.us';
-    
-    // Obtener nombre del cliente
-    const userName = datosCita.nombreCliente || 'Cliente';
-    
-    // Crear la reserva
-    const reserva = {
-      userId: userIdCliente,
-      userName: userName,
-      servicio: datosCita.servicio,
-      fechaHora: fechaHora,
-      duracion: duracion,
-      estado: 'confirmada', // Las citas creadas por admin se marcan como confirmadas
-      deposito: datosCita.precio ? parseFloat(datosCita.precio) : 0
-    };
-    
-    // Guardar en base de datos
-    const idReserva = await db.guardarReserva(reserva);
-    
-    // Enviar confirmación al administrador
-    await enviarMensajeSeguro(
-      client,
-      userIdAdmin,
-      `✅ *Cita creada exitosamente*\n\n` +
-      `🆔 ID Reserva: ${idReserva}\n` +
-      `📅 Fecha: ${fechaHora.toLocaleDateString('es-PE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}\n` +
-      `⏰ Hora: ${fechaHora.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' })}\n` +
-      `👤 Cliente: ${userName}\n` +
-      `📱 Teléfono: ${extraerNumero(userIdCliente)}\n` +
-      `💆 Servicio: ${datosCita.servicio}\n` +
-      `⏱️ Duración: ${duracion} minutos\n` +
-      `💰 Precio: S/ ${datosCita.precio || '0'}\n` +
-      `📊 Estado: Confirmada`
-    );
-    
-    logMessage("SUCCESS", "Cita creada desde imagen por administrador", {
-      idReserva: idReserva,
-      datosCita: datosCita,
-      reserva: reserva
-    });
-    
-    return { exito: true, idReserva: idReserva, reserva: reserva };
-    
-  } catch (error) {
-    logMessage("ERROR", "Error al crear cita completa", {
-      error: error.message,
-      stack: error.stack,
-      datosCita: datosCita
-    });
-    throw error;
-  }
-}
-
-/**
- * Procesa una imagen enviada por un administrador para crear una cita
- * @param {Object} client - Cliente de wppconnect
- * @param {Object} message - Mensaje con imagen
- * @param {string} userId - ID del administrador
- */
-async function procesarImagenCita(client, message, userId) {
-  try {
-    console.log(`\n📷 IMAGEN RECIBIDA DE ADMINISTRADOR - PROCESANDO CON OPENAI VISION...\n`);
-    logMessage("INFO", "Procesando imagen de cita enviada por administrador", {
-      userId: userId,
-      messageId: message.id
-    });
-
-    // Enviar mensaje de procesamiento
-    await enviarMensajeSeguro(
-      client,
-      userId,
-      "🔄 Procesando imagen con OpenAI Vision...\n\nPor favor espera un momento."
-    );
-
-    // Extraer información de la imagen
-    const datosCita = await extraerDatosCitaDeImagen(client, message);
-    
-    if (!datosCita) {
-      await enviarMensajeSeguro(
-        client,
-        userId,
-        "❌ No pude procesar la imagen. Por favor, asegúrate de que:\n" +
-        "• La imagen sea clara y legible\n" +
-        "• Contenga la información de la cita\n" +
-        "• Esté bien iluminada\n\n" +
-        "Intenta enviar la imagen nuevamente."
-      );
-      return;
-    }
-    
-    // Validar datos mínimos extraídos
-    if (!datosCita.fecha || !datosCita.hora || !datosCita.servicio) {
-      let mensajeError = "❌ No pude extraer toda la información necesaria de la imagen.\n\n";
-      mensajeError += "*Datos encontrados:*\n";
-      mensajeError += `• Fecha: ${datosCita.fecha || '❌ No encontrada'}\n`;
-      mensajeError += `• Hora: ${datosCita.hora || '❌ No encontrada'}\n`;
-      mensajeError += `• Servicio: ${datosCita.servicio || '❌ No encontrado'}\n`;
-      mensajeError += `• Precio: ${datosCita.precio ? 'S/ ' + datosCita.precio : 'No encontrado'}\n`;
-      mensajeError += `• Cliente: ${datosCita.nombreCliente || '❌ No encontrado'}\n`;
-      mensajeError += `• Teléfono: ${datosCita.telefonoCliente || '❌ No encontrado'}\n\n`;
-      mensajeError += "Por favor, verifica que la imagen contenga al menos:\n";
-      mensajeError += "• Fecha (dd/MM o dd/MM/yyyy)\n";
-      mensajeError += "• Hora\n";
-      mensajeError += "• Servicio\n";
-      mensajeError += "• Nombre del cliente\n";
-      mensajeError += "• Teléfono del cliente";
-
-      await enviarMensajeSeguro(client, userId, mensajeError);
-      return;
-    }
-    
-    // Si faltan datos críticos del cliente, informar
-    if (!datosCita.telefonoCliente || !datosCita.nombreCliente) {
-      let mensajeFaltante = "⚠️ *Datos extraídos de la imagen:*\n\n";
-      mensajeFaltante += `📅 Fecha: ${datosCita.fecha}\n`;
-      mensajeFaltante += `⏰ Hora: ${datosCita.hora}\n`;
-      mensajeFaltante += `💆 Servicio: ${datosCita.servicio}\n`;
-      mensajeFaltante += `💰 Precio: S/ ${datosCita.precio || '0'}\n`;
-      if (datosCita.duracion) {
-        mensajeFaltante += `⏱️ Duración: ${datosCita.duracion} minutos\n`;
-      }
-      mensajeFaltante += "\n❌ *Faltan los siguientes datos obligatorios:*\n";
-      if (!datosCita.telefonoCliente) {
-        mensajeFaltante += "• Número de teléfono del cliente\n";
-      }
-      if (!datosCita.nombreCliente) {
-        mensajeFaltante += "• Nombre del cliente\n";
-      }
-      mensajeFaltante += "\nPor favor, asegúrate de que la imagen contenga esta información.";
-
-      await enviarMensajeSeguro(client, userId, mensajeFaltante);
-      return;
-    }
-    
-    // Si tenemos todos los datos, crear la cita directamente
-    await crearCitaCompleta(client, userId, datosCita);
-    
-  } catch (error) {
-    logMessage("ERROR", "Error al procesar imagen de cita", {
-      error: error.message,
-      stack: error.stack
-    });
-    await enviarMensajeSeguro(
-      client,
-      userId,
-      "❌ Error al procesar la imagen y crear la cita.\n\n" +
-      `Error: ${error.message}\n\n` +
-      "Por favor, verifica que:\n" +
-      "• La imagen contenga todos los datos necesarios\n" +
-      "• Los datos sean legibles\n" +
-      "• Intenta enviar la imagen nuevamente"
-    );
-  }
-}
-
-async function enviarMensajeSeguro(client, userId, mensaje) {
-  try {
-    // Validar que userId existe y tiene formato correcto
-    if (!userId || typeof userId !== "string") {
-      logMessage("ERROR", "Intento de enviar mensaje con userId inválido", {
-        userId: userId,
-        mensaje: mensaje.substring(0, 50),
-      });
-      return false;
-    }
-
-    // Asegurar que el userId tiene el formato correcto (@c.us o @lid)
-    let numeroFormateado = userId.trim();
-
-    // Si ya tiene @c.us o @lid, mantenerlo
-    if (
-      numeroFormateado.endsWith("@c.us") ||
-      numeroFormateado.endsWith("@lid")
-    ) {
-      // Ya está en formato correcto, no hacer nada
-    } else {
-      // Si no termina con @c.us o @lid, agregar @c.us
-      // Remover cualquier @g.us u otro sufijo
-      numeroFormateado = numeroFormateado.replace(/@.*$/, "");
-      // Agregar @c.us por defecto
-      numeroFormateado = numeroFormateado + "@c.us";
-    }
-
-    // Validar que el número tiene formato válido (@c.us o @lid)
-    const esFormatoValido = validarFormatoUserId(numeroFormateado);
-
-    if (!esFormatoValido) {
-      logMessage("ERROR", "Número de WhatsApp inválido para enviar mensaje", {
-        original: userId,
-        formateado: numeroFormateado,
-      });
-      return false;
-    }
-
-    // Validar que NO es un estado (los estados no tienen formato @c.us válido)
-    if (
-      numeroFormateado.includes("status") ||
-      numeroFormateado.includes("broadcast")
-    ) {
-      logMessage("ERROR", "Intento de enviar mensaje a estado o broadcast", {
-        numeroFormateado: numeroFormateado,
-      });
-      return false;
-    }
-
-    // Enviar el mensaje usando el número formateado correctamente
-    await client.sendText(numeroFormateado, mensaje);
-
-    if (LOG_LEVEL === 'verbose') {
-      logMessage("SUCCESS", `Mensaje enviado correctamente`, {
-        destino: extraerNumero(numeroFormateado),
-        longitud: mensaje.length,
-      });
-    }
-
-    return true;
-  } catch (error) {
-    logMessage("ERROR", "Error al enviar mensaje", {
-      userId: userId,
-      error: error.message,
-      stack: error.stack?.substring(0, 200),
-    });
-    return false;
-  }
-}
+// Funciones ahora están en handlers/image.js
+const procesarImagenCita = imageHandler.procesarImagenCita;
 
 // Funciones rotarLogs y logMessage ahora vienen del módulo utils/logger.js
 
-// Inicializar OpenAI
-if (config.OPENAI_API_KEY && config.OPENAI_API_KEY.trim() !== "") {
-  try {
-    openai = new OpenAI({
-      apiKey: config.OPENAI_API_KEY.trim(),
-    });
-    logMessage("SUCCESS", "✅ OpenAI inicializado correctamente");
-  } catch (error) {
-    logMessage("ERROR", "Error al inicializar OpenAI", {
-      error: error.message,
-    });
-    openai = null;
-  }
-} else {
-  logMessage(
-    "WARNING",
-    "⚠️ OpenAI no disponible - OPENAI_API_KEY no configurada o está vacía"
-  );
-  logMessage(
-    "INFO",
-    "💡 Para habilitar OpenAI, configura la variable de entorno OPENAI_API_KEY"
-  );
-}
+// Inicializar OpenAI usando el handler
+aiHandler.inicializarOpenAI();
 
 // ============================================
 // FUNCIÓN PARA LIMPIAR ARCHIVOS BLOQUEADOS
@@ -2608,17 +1395,36 @@ async function start(client) {
   try {
     await db.inicializarDB();
     logMessage("SUCCESS", "Base de datos SQLite inicializada");
+    
+    // Sincronizar flags con SQLite al iniciar
+    try {
+      const flagBotActivo = await db.obtenerConfiguracion('flag_bot_activo');
+      const flagIAActivada = await db.obtenerConfiguracion('flag_ia_activada');
+      
+      if (flagBotActivo === '0') {
+        logMessage("INFO", "Bot desactivado globalmente (flag_bot_activo = 0)");
+      }
+      
+      if (flagIAActivada === '0') {
+        iaGlobalDesactivada = true;
+        logMessage("INFO", "IA desactivada globalmente (flag_ia_activada = 0)");
+      } else if (flagIAActivada === '1') {
+        iaGlobalDesactivada = false;
+        logMessage("INFO", "IA activada globalmente (flag_ia_activada = 1)");
+      }
+    } catch (error) {
+      logMessage("WARNING", "Error al sincronizar flags con SQLite, usando valores por defecto", {
+        error: error.message
+      });
+    }
   } catch (error) {
     logMessage("ERROR", "Error al inicializar base de datos", {
       error: error.message
     });
   }
   
-  if (openai) {
-    logMessage("INFO", "IA activada");
-  } else if (LOG_LEVEL === 'verbose' || LOG_LEVEL === 'debug') {
-    logMessage("INFO", "IA desactivada (sin API key)");
-  }
+  // OpenAI se inicializa en handlers/ai.js
+  logMessage("INFO", "IA disponible a través de handlers/ai.js");
   
   logMessage("SUCCESS", "Bot iniciado y listo");
 
@@ -2686,12 +1492,56 @@ async function start(client) {
     }
   });
 
+  // Cache para evitar procesar mensajes duplicados
+  const mensajesProcesados = new Set();
+  const LIMPIEZA_CACHE_INTERVALO = 5 * 60 * 1000; // Limpiar cache cada 5 minutos
+  
+  // Limpiar cache periódicamente
+  setInterval(() => {
+    if (mensajesProcesados.size > 1000) {
+      mensajesProcesados.clear();
+      if (LOG_LEVEL === 'verbose') {
+        logMessage("INFO", "Cache de mensajes procesados limpiado");
+      }
+    }
+  }, LIMPIEZA_CACHE_INTERVALO);
+
   // Evento cuando se recibe un mensaje
   client.onMessage(async (message) => {
     try {
       // ============================================
       // FILTROS ESTRICTOS PARA IGNORAR ESTADOS Y MENSAJES NO DESEADOS
       // ============================================
+
+      // 0. Prevenir procesamiento duplicado de mensajes
+      const mensajeId = message.id || `${message.from}_${message.timestamp}_${message.body?.substring(0, 50)}`;
+      if (mensajesProcesados.has(mensajeId)) {
+        if (LOG_LEVEL === 'verbose') {
+          logMessage("INFO", "Mensaje duplicado ignorado", { mensajeId, from: message.from });
+        }
+        return;
+      }
+      mensajesProcesados.add(mensajeId);
+
+      // 0.5. Verificar si el bot está activo globalmente (antes de procesar)
+      // Obtener userId temporalmente para verificar si es admin
+      const userIdTemp = message.from;
+      const esAdminTemp = esAdministrador(userIdTemp);
+      if (!esAdminTemp) {
+        try {
+          const flagBotActivo = await db.obtenerConfiguracion('flag_bot_activo');
+          if (flagBotActivo === '0') {
+            // Bot desactivado globalmente - ignorar mensajes de no-admins
+            if (LOG_LEVEL === 'verbose') {
+              logMessage("INFO", "Mensaje ignorado - bot desactivado globalmente", { userId: userIdTemp });
+            }
+            return;
+          }
+        } catch (error) {
+          // Si hay error al obtener configuración, continuar (bot activo por defecto)
+          logMessage("WARNING", "Error al verificar flag_bot_activo, continuando", { error: error.message });
+        }
+      }
 
       // 1. Ignorar mensajes propios
       if (message.fromMe === true) return;
@@ -2931,11 +1781,11 @@ async function start(client) {
           textLower === "estadísticas"
         ) {
           try {
-            await enviarMensajeSeguro(
-              client,
-              userId,
-              obtenerEstadisticas()
-            );
+              await enviarMensajeSeguro(
+                client,
+                userId,
+                obtenerEstadisticas(estadisticas)
+              );
             if (LOG_LEVEL === 'verbose') {
               logMessage("INFO", "Estadísticas enviadas al administrador");
             }
@@ -2943,6 +1793,124 @@ async function start(client) {
             logMessage("ERROR", "Error al enviar estadísticas", {
               error: error.message,
             });
+          }
+          return;
+        }
+
+        // Comando: Ver reservas activas
+        const textoTrimReservas = textLower.trim();
+        if (
+          textoTrimReservas === "ver reservas" ||
+          textoTrimReservas === "reservas activas" ||
+          textoTrimReservas === "ver reservas activas"
+        ) {
+          try {
+            const reservas = await db.obtenerReservas({});
+            // Filtrar solo pendientes y confirmadas
+            const reservasActivas = reservas.filter(r => 
+              r.estado === 'pendiente' || r.estado === 'confirmada'
+            );
+            
+            if (reservasActivas.length === 0) {
+              await enviarMensajeSeguro(
+                client,
+                userId,
+                "📋 *RESERVAS ACTIVAS*\n\n✅ No hay reservas activas en este momento."
+              );
+              return;
+            }
+            
+            // Ordenar por fecha
+            reservasActivas.sort((a, b) => a.fechaHora - b.fechaHora);
+            
+            let mensaje = `📋 *RESERVAS ACTIVAS*\n\n`;
+            mensaje += `Total: ${reservasActivas.length} reserva(s)\n\n`;
+            
+            reservasActivas.forEach((r, idx) => {
+              const fechaHora = r.fechaHora.toLocaleString('es-PE', {
+                weekday: 'short',
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+              });
+              const estadoEmoji = r.estado === 'confirmada' ? '✅' : '⏳';
+              
+              mensaje += `${idx + 1}. ${estadoEmoji} *${fechaHora}*\n`;
+              mensaje += `   👤 ${r.userName}\n`;
+              mensaje += `   💆 ${r.servicio}\n`;
+              mensaje += `   📱 ${extraerNumero(r.userId)}\n`;
+              mensaje += `   📊 Estado: ${r.estado}\n\n`;
+            });
+            
+            await enviarMensajeSeguro(client, userId, mensaje);
+            logMessage("INFO", "Reservas activas enviadas al administrador", {
+              total: reservasActivas.length
+            });
+          } catch (error) {
+            logMessage("ERROR", "Error al obtener reservas activas", {
+              error: error.message,
+            });
+            await enviarMensajeSeguro(
+              client,
+              userId,
+              "❌ Error al obtener las reservas activas. Por favor, intenta más tarde."
+            );
+          }
+          return;
+        }
+
+        // Comando: Resetear sesión de usuario
+        if (textoTrimReservas.startsWith("reset ")) {
+          try {
+            // Extraer número del comando (acepta +51XXXXXXXXX o 51XXXXXXXXX)
+            const numeroMatch = text.match(/reset\s+(\+?5\d{8,12})/i);
+            if (!numeroMatch) {
+              await enviarMensajeSeguro(
+                client,
+                userId,
+                "❌ Formato incorrecto.\n\nUso: `reset +519XXXXXXXXX` o `reset 519XXXXXXXXX`\n\nEjemplo: `reset +51986613254`"
+              );
+              return;
+            }
+            
+            let numeroUsuario = numeroMatch[1].replace(/\D/g, ''); // Solo números
+            if (!numeroUsuario.startsWith('51') && numeroUsuario.length === 9) {
+              numeroUsuario = '51' + numeroUsuario;
+            }
+            numeroUsuario = numeroUsuario + '@c.us';
+            
+            // Limpiar estado del usuario
+            storage.setUserState(numeroUsuario, null);
+            storage.setHumanMode(numeroUsuario, false);
+            storage.setBotDesactivado(numeroUsuario, false);
+            
+            // Limpiar datos de usuario
+            const userData = storage.getUserData(numeroUsuario) || {};
+            userData.iaDesactivada = false;
+            userData.botDesactivadoPorAdmin = false;
+            userData.modoReservaDesde = null;
+            storage.setUserData(numeroUsuario, userData);
+            
+            await enviarMensajeSeguro(
+              client,
+              userId,
+              `✅ *Sesión reseteada*\n\nSe ha reseteado la sesión para:\n📱 ${extraerNumero(numeroUsuario)}\n\nEl usuario puede volver a interactuar normalmente con el bot.`
+            );
+            logMessage("INFO", "Sesión de usuario reseteada por administrador", {
+              userId: numeroUsuario,
+              adminId: extraerNumero(userId)
+            });
+          } catch (error) {
+            logMessage("ERROR", "Error al resetear sesión", {
+              error: error.message,
+            });
+            await enviarMensajeSeguro(
+              client,
+              userId,
+              "❌ Error al resetear la sesión. Por favor, verifica el número e intenta nuevamente."
+            );
           }
           return;
         }
@@ -3061,16 +2029,34 @@ async function start(client) {
           return; // IMPORTANTE: Salir inmediatamente después de procesar el comando
         }
 
-        // Comando: Desactivar IA
-        if (
-          fuzzyMatch(textLower, "desactivar ia") ||
-          fuzzyMatch(textLower, "desactivar inteligencia artificial") ||
-          textLower === "desactivar ia" ||
-          textLower === "ia off" ||
-          textLower === "desactivar ai"
-        ) {
+        // IMPORTANTE: Verificar comandos de IA PRIMERO (más específicos) antes de comandos de bot
+        // Comando: Desactivar IA (verificar PRIMERO para evitar conflictos)
+        const textoTrimIA = textLower.trim();
+        const esDesactivarIA = 
+          textoTrimIA === "desactivar ia" ||
+          textoTrimIA === "desactivar ai" ||
+          textoTrimIA === "ia off" ||
+          textoTrimIA === "ai off" ||
+          textoTrimIA === "desactivar inteligencia artificial";
+        
+        const esActivarIA = 
+          textoTrimIA === "activar ia" ||
+          textoTrimIA === "activar ai" ||
+          textoTrimIA === "ia on" ||
+          textoTrimIA === "ai on" ||
+          textoTrimIA === "activar inteligencia artificial";
+        
+        console.log(`\n🔍 VERIFICANDO COMANDOS DE IA:`);
+        console.log(`   Texto: "${textoTrimIA}"`);
+        console.log(`   ¿Es "desactivar ia"? ${esDesactivarIA ? '✅ SÍ' : '❌ NO'}`);
+        console.log(`   ¿Es "activar ia"? ${esActivarIA ? '✅ SÍ' : '❌ NO'}`);
+        
+        if (esDesactivarIA) {
+          console.log(`\n✅ ✅ ✅ COMANDO "DESACTIVAR IA" DETECTADO - EJECUTANDO... ✅ ✅ ✅\n`);
           iaGlobalDesactivada = true;
           try {
+            // Sincronizar con SQLite
+            await db.establecerConfiguracion('flag_ia_activada', '0', 'IA desactivada globalmente');
             await enviarMensajeSeguro(
               client,
               userId,
@@ -3080,24 +2066,22 @@ async function start(client) {
               "INFO",
               "IA desactivada globalmente por el administrador"
             );
+            console.log(`\n✅ IA DESACTIVADA CORRECTAMENTE\n`);
           } catch (error) {
             logMessage("ERROR", "Error al desactivar IA", {
               error: error.message,
             });
+            console.log(`\n❌ ERROR AL DESACTIVAR IA: ${error.message}\n`);
           }
           return;
         }
-
-        // Comando: Activar IA
-        if (
-          fuzzyMatch(textLower, "activar ia") ||
-          fuzzyMatch(textLower, "activar inteligencia artificial") ||
-          textLower === "activar ia" ||
-          textLower === "ia on" ||
-          textLower === "activar ai"
-        ) {
+        
+        if (esActivarIA) {
+          console.log(`\n✅ ✅ ✅ COMANDO "ACTIVAR IA" DETECTADO - EJECUTANDO... ✅ ✅ ✅\n`);
           iaGlobalDesactivada = false;
           try {
+            // Sincronizar con SQLite
+            await db.establecerConfiguracion('flag_ia_activada', '1', 'IA activada globalmente');
             await enviarMensajeSeguro(
               client,
               userId,
@@ -3107,13 +2091,32 @@ async function start(client) {
               "INFO",
               "IA reactivada globalmente por el administrador"
             );
+            console.log(`\n✅ IA ACTIVADA CORRECTAMENTE\n`);
           } catch (error) {
             logMessage("ERROR", "Error al activar IA", {
               error: error.message,
             });
+            console.log(`\n❌ ERROR AL ACTIVAR IA: ${error.message}\n`);
           }
           return;
         }
+        
+        // Comando: Desactivar bot para un usuario específico (solo si NO es comando de IA)
+        // Formato: "desactivar bot [número]" o "desactivar bot" (muestra lista)
+        const esDesactivarBot = 
+          textoTrimIA === "desactivar bot" ||
+          textoTrimIA.startsWith("desactivar bot ") ||
+          textoTrimIA === "bot off";
+        
+        const esActivarBot = 
+          textoTrimIA === "activar bot" ||
+          textoTrimIA.startsWith("activar bot ") ||
+          textoTrimIA === "bot on";
+        
+        console.log(`\n🔍 VERIFICANDO COMANDOS DE BOT:`);
+        console.log(`   Texto: "${textoTrimIA}"`);
+        console.log(`   ¿Es "desactivar bot"? ${esDesactivarBot ? '✅ SÍ' : '❌ NO'}`);
+        console.log(`   ¿Es "activar bot"? ${esActivarBot ? '✅ SÍ' : '❌ NO'}`);
 
         // Comando: Estado de IA
         if (
@@ -3142,14 +2145,36 @@ async function start(client) {
           return;
         }
 
-        // Comando: Desactivar bot para un usuario específico
+        // Comando: Desactivar bot para un usuario específico O globalmente
         // Formato: "desactivar bot [número]" o "desactivar bot" (muestra lista)
-        if (
-          fuzzyMatch(textLower, "desactivar bot") ||
-          textLower === "desactivar bot" ||
-          textLower === "bot off" ||
-          fuzzyMatch(textLower, "modo manual")
-        ) {
+        // Si no hay número, desactivar bot globalmente
+        if (esDesactivarBot) {
+          // Verificar si es comando global (sin número)
+          if (textoTrimIA === "desactivar bot" || textoTrimIA === "bot off") {
+            try {
+              await db.establecerConfiguracion('flag_bot_activo', '0', 'Bot desactivado globalmente');
+              await enviarMensajeSeguro(
+                client,
+                userId,
+                "✅ *Bot Desactivado Globalmente*\n\nEl bot ha sido desactivado completamente.\n\nTodos los mensajes serán ignorados hasta que reactives el bot.\n\nPara reactivarlo, escribe: *Activar bot*"
+              );
+              logMessage("INFO", "Bot desactivado globalmente por administrador", {
+                adminId: extraerNumero(userId)
+              });
+            } catch (error) {
+              logMessage("ERROR", "Error al desactivar bot globalmente", {
+                error: error.message,
+              });
+              await enviarMensajeSeguro(
+                client,
+                userId,
+                "❌ Error al desactivar el bot. Por favor, intenta nuevamente."
+              );
+            }
+            return;
+          }
+          
+          // Si hay número, desactivar para usuario específico
           // Intentar extraer número del mensaje
           const numeroMatch = text.match(/(\d{9,12})/);
 
@@ -3264,13 +2289,35 @@ async function start(client) {
           return;
         }
 
-        // Comando: Activar bot para un usuario específico
-        if (
-          fuzzyMatch(textLower, "activar bot") ||
-          textLower === "activar bot" ||
-          textLower === "bot on" ||
-          fuzzyMatch(textLower, "reactivar bot")
-        ) {
+        // Comando: Activar bot para un usuario específico O globalmente
+        // Si no hay número, activar bot globalmente
+        if (esActivarBot) {
+          // Verificar si es comando global (sin número)
+          if (textoTrimIA === "activar bot" || textoTrimIA === "bot on") {
+            try {
+              await db.establecerConfiguracion('flag_bot_activo', '1', 'Bot activado globalmente');
+              await enviarMensajeSeguro(
+                client,
+                userId,
+                "✅ *Bot Activado Globalmente*\n\nEl bot ha sido reactivado completamente.\n\nAhora puede procesar todos los mensajes normalmente."
+              );
+              logMessage("INFO", "Bot activado globalmente por administrador", {
+                adminId: extraerNumero(userId)
+              });
+            } catch (error) {
+              logMessage("ERROR", "Error al activar bot globalmente", {
+                error: error.message,
+              });
+              await enviarMensajeSeguro(
+                client,
+                userId,
+                "❌ Error al activar el bot. Por favor, intenta nuevamente."
+              );
+            }
+            return;
+          }
+          
+          // Si hay número, activar para usuario específico
           // Intentar extraer número del mensaje
           const numeroMatch = text.match(/(\d{9,12})/);
 
@@ -3756,6 +2803,160 @@ async function start(client) {
             )} minutos restantes)`
           );
           return;
+        }
+      }
+
+      // ============================================
+      // VERIFICAR SI EL USUARIO ESTÁ BLOQUEADO
+      // ============================================
+      if (!esAdmin) {
+        const telefonoUsuario = extraerNumero(userId);
+        try {
+          const estaBloqueado = await db.estaUsuarioBloqueado(telefonoUsuario);
+          if (estaBloqueado) {
+            logMessage("INFO", `Mensaje ignorado de usuario bloqueado`, { userId, telefono: telefonoUsuario });
+            return;
+          }
+        } catch (error) {
+          logMessage("WARNING", "Error al verificar si usuario está bloqueado", { error: error.message });
+          // Continuar si hay error (no bloquear por error técnico)
+        }
+      }
+
+      // ============================================
+      // COMANDOS DE CLIENTE
+      // ============================================
+      if (!esAdmin) {
+        // Comando: mis citas
+        if (textLower === "mis citas" || textLower === "mis reservas") {
+          await clientCommandsHandler.mostrarMisCitas(client, userId);
+          return;
+        }
+
+        // Comando: estado de mi cita
+        if (textLower === "estado de mi cita" || textLower === "estado mi cita" || textLower === "mi cita") {
+          await clientCommandsHandler.mostrarEstadoCita(client, userId);
+          return;
+        }
+
+        // Comando: precios
+        if (textLower === "precios" || textLower === "precio" || textLower.includes("cuanto cuesta") || textLower.includes("cuánto cuesta")) {
+          await clientCommandsHandler.mostrarPrecios(client, userId);
+          return;
+        }
+
+        // Comando: formas de pago
+        if (textLower === "formas de pago" || textLower === "formas pago" || textLower === "pago" || textLower.includes("como pagar") || textLower.includes("cómo pagar")) {
+          await clientCommandsHandler.mostrarFormasPago(client, userId);
+          return;
+        }
+
+        // Comando: ubicacion
+        if (textLower === "ubicacion" || textLower === "ubicación" || textLower === "direccion" || textLower === "dirección" || textLower.includes("donde estan") || textLower.includes("dónde están")) {
+          await clientCommandsHandler.mostrarUbicacion(client, userId);
+          return;
+        }
+
+        // Comando: menu / ayuda
+        if (textLower === "menu" || textLower === "menú" || textLower === "ayuda" || textLower === "help" || textLower === "comandos") {
+          await clientCommandsHandler.mostrarMenu(client, userId);
+          return;
+        }
+
+        // Comando: volver
+        if (textLower === "volver" || textLower === "atras" || textLower === "atrás") {
+          storage.setUserState(userId, null);
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            "✅ Has vuelto al menú principal. ¿En qué puedo ayudarte?"
+          );
+          return;
+        }
+
+        // Procesar respuestas de confirmación/cancelación de recordatorios
+        if (textLower === "confirmar" || textLower.includes("confirmo") || textLower.includes("sí confirmo") || textLower.includes("si confirmo")) {
+          // Buscar reserva pendiente más próxima
+          const reservas = await db.obtenerReservas({
+            userId: userId,
+            estado: 'pendiente'
+          });
+          
+          if (reservas.length > 0) {
+            reservas.sort((a, b) => a.fechaHora - b.fechaHora);
+            const proximaReserva = reservas[0];
+            await db.confirmarReserva(proximaReserva.id);
+            await enviarMensajeSeguro(
+              client,
+              userId,
+              `✅ *Cita Confirmada*\n\n` +
+              `📅 Fecha/Hora: ${proximaReserva.fechaHora.toLocaleString('es-PE')}\n` +
+              `💆 Servicio: ${proximaReserva.servicio}\n\n` +
+              `¡Te esperamos en Essenza Spa! 🌿`
+            );
+            return;
+          }
+        }
+      }
+
+      // ============================================
+      // DETECCIÓN: CANCELAR O REPROGRAMAR TURNO (CLIENTES)
+      // ============================================
+      if (!esAdmin) {
+        // Procesar cancelar/reprogramar usando el handler
+        const procesadoCancelarReprogramar = await clientHandler.procesarCancelarReprogramar(client, userId, textLower);
+        if (procesadoCancelarReprogramar) {
+          return;
+        }
+        
+        // Procesar selección de reserva para cancelar usando el handler
+        const procesadoSeleccionCancelar = await clientHandler.procesarSeleccionCancelar(client, userId, textLower);
+        if (procesadoSeleccionCancelar) {
+          return;
+        }
+        
+        // Procesar reprogramación (lógica específica que requiere más contexto)
+        if (storage.getUserState(userId) === "reprogramando_reserva" || storage.getUserState(userId) === "seleccionando_reprogramar") {
+          const userData = storage.getUserData(userId) || {};
+          
+          if (storage.getUserState(userId) === "seleccionando_reprogramar") {
+            // Primero seleccionar reserva
+            const reservasPendientes = userData.reservasPendientes || [];
+            const numeroSeleccionado = parseInt(textLower.trim());
+            
+            if (!isNaN(numeroSeleccionado) && numeroSeleccionado >= 1 && numeroSeleccionado <= reservasPendientes.length) {
+              const reservaSeleccionada = reservasPendientes[numeroSeleccionado - 1];
+              await enviarMensajeSeguro(
+                client,
+                userId,
+                `🔄 *Reprogramar reserva*\n\n` +
+                `Tu reserva actual:\n` +
+                `📅 ${reservaSeleccionada.fechaHora.toLocaleString('es-PE')}\n` +
+                `💆 ${reservaSeleccionada.servicio}\n\n` +
+                `Por favor, indica la nueva fecha y hora que deseas.\n` +
+                `Ejemplo: "15 de enero a las 3 de la tarde"`
+              );
+              storage.setUserState(userId, "reprogramando_reserva");
+              userData.reservaAReprogramar = reservaSeleccionada;
+              delete userData.reservasPendientes;
+              storage.setUserData(userId, userData);
+              return;
+            }
+          } else {
+            // Procesar nueva fecha/hora
+            const reservaAReprogramar = userData.reservaAReprogramar;
+            if (reservaAReprogramar) {
+              // Extraer fecha y hora del mensaje (usar lógica similar a flujo de reserva)
+              // Por simplicidad, aquí se puede usar la IA o un parser de fechas
+              await enviarMensajeSeguro(
+                client,
+                userId,
+                "🔄 Estoy procesando tu solicitud de reprogramación. Por favor, indica la nueva fecha y hora en formato claro.\n\nEjemplo: \"15 de enero a las 3 de la tarde\" o \"mañana a las 2 pm\""
+              );
+              // El flujo continuará en el siguiente mensaje donde se procesará la fecha
+              return;
+            }
+          }
         }
       }
 

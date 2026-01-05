@@ -35,59 +35,350 @@ async function inicializarDB() {
   
   return new Promise((resolve, reject) => {
     db.serialize(() => {
-      // Tabla de reservas
+      // Tabla de reservas (actualizada con nuevos campos)
       db.run(`
         CREATE TABLE IF NOT EXISTS reservas (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           userId TEXT NOT NULL,
           userName TEXT NOT NULL,
+          servicio_id INTEGER,
           servicio TEXT NOT NULL,
           fechaHora TEXT NOT NULL,
           duracion INTEGER DEFAULT 60,
-          estado TEXT DEFAULT 'pendiente',
+          estado TEXT DEFAULT 'pendiente' CHECK(estado IN ('pendiente', 'confirmada', 'cancelada')),
           deposito REAL DEFAULT 0,
           notificado INTEGER DEFAULT 0,
+          origen TEXT DEFAULT 'bot' CHECK(origen IN ('bot', 'admin', 'imagen')),
+          notas TEXT,
           creada TEXT NOT NULL,
           actualizada TEXT NOT NULL
         )
       `, (err) => {
         if (err) {
           reject(err);
-        } else {
-          // Crear índices para búsquedas rápidas
+          return;
+        }
+        
+        // Tabla de configuración del bot
+        db.run(`
+          CREATE TABLE IF NOT EXISTS configuracion (
+            clave TEXT PRIMARY KEY,
+            valor TEXT NOT NULL,
+            descripcion TEXT,
+            actualizada TEXT NOT NULL
+          )
+        `, (err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          
+          // Inicializar valores por defecto de configuración
+          const ahora = new Date().toISOString();
           db.run(`
-            CREATE INDEX IF NOT EXISTS idx_fechaHora ON reservas(fechaHora)
-          `, (err) => {
+            INSERT OR IGNORE INTO configuracion (clave, valor, descripcion, actualizada)
+            VALUES 
+              ('flag_bot_activo', '1', 'Flag que indica si el bot está activo (1=activo, 0=desactivado)', ?),
+              ('flag_ia_activada', '1', 'Flag que indica si la IA está activada (1=activada, 0=desactivada)', ?),
+              ('modo_ia', 'auto', 'Modo de IA: auto, manual, solo_faq', ?),
+              ('limite_ia_por_usuario', '10', 'Cantidad máxima de respuestas IA por usuario por día', ?),
+              ('horas_confirmacion_automatica', '24', 'Horas para confirmación automática si no hay respuesta', ?)
+          `, [ahora, ahora, ahora, ahora, ahora], (err) => {
             if (err) {
               reject(err);
-            } else {
+              return;
+            }
+            
+            // Tabla de servicios
+            db.run(`
+              CREATE TABLE IF NOT EXISTS servicios (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                nombre TEXT NOT NULL UNIQUE,
+                duracion INTEGER NOT NULL,
+                precio REAL NOT NULL,
+                activo INTEGER DEFAULT 1 CHECK(activo IN (0, 1)),
+                categoria TEXT,
+                descripcion TEXT,
+                creado TEXT NOT NULL,
+                actualizado TEXT NOT NULL
+              )
+            `, (err) => {
+              if (err) {
+                reject(err);
+                return;
+              }
+              
+              // Tabla de usuarios_bloqueados
               db.run(`
-                CREATE INDEX IF NOT EXISTS idx_userId ON reservas(userId)
+                CREATE TABLE IF NOT EXISTS usuarios_bloqueados (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  telefono TEXT NOT NULL UNIQUE,
+                  motivo TEXT,
+                  fecha_bloqueo TEXT NOT NULL,
+                  bloqueado_por TEXT,
+                  activo INTEGER DEFAULT 1 CHECK(activo IN (0, 1))
+                )
               `, (err) => {
                 if (err) {
                   reject(err);
-                } else {
+                  return;
+                }
+                
+                // Tabla de interacciones_ia
+                db.run(`
+                  CREATE TABLE IF NOT EXISTS interacciones_ia (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    userId TEXT NOT NULL,
+                    fecha TEXT NOT NULL,
+                    cantidad INTEGER DEFAULT 1,
+                    UNIQUE(userId, fecha)
+                  )
+                `, (err) => {
+                  if (err) {
+                    reject(err);
+                    return;
+                  }
+                  
+                  // Tabla de clientes
                   db.run(`
-                    CREATE INDEX IF NOT EXISTS idx_estado ON reservas(estado)
+                    CREATE TABLE IF NOT EXISTS clientes (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      telefono TEXT NOT NULL UNIQUE,
+                      nombre TEXT,
+                      fecha_creacion TEXT NOT NULL,
+                      notas TEXT,
+                      total_reservas INTEGER DEFAULT 0,
+                      reservas_canceladas INTEGER DEFAULT 0,
+                      ultima_reserva TEXT
+                    )
                   `, (err) => {
                     if (err) {
                       reject(err);
-                    } else {
-                      db.close((err) => {
+                      return;
+                    }
+                    
+                    // Tabla de logs
+                    db.run(`
+                      CREATE TABLE IF NOT EXISTS logs (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        nivel TEXT NOT NULL,
+                        mensaje TEXT NOT NULL,
+                        datos TEXT,
+                        userId TEXT,
+                        timestamp TEXT NOT NULL
+                      )
+                    `, (err) => {
+                      if (err) {
+                        reject(err);
+                        return;
+                      }
+                      
+                              // Crear índices para búsquedas rápidas (solo si las columnas existen)
+                      // Nota: Los índices se crearán después de la migración si es necesario
+                      db.run(`
+                        CREATE INDEX IF NOT EXISTS idx_fechaHora ON reservas(fechaHora)
+                      `, (err) => {
+                        // Ignorar errores de índices si las columnas no existen aún
+                        if (err && err.message && err.message.includes('no such column')) {
+                          console.log('⚠️  Índice no creado (columna no existe aún, se creará después de migración)');
+                        } else if (err) {
+                          reject(err);
+                          return;
+                        }
                         if (err) {
                           reject(err);
-                        } else {
-                          resolve();
+                          return;
                         }
+                        
+                        db.run(`
+                          CREATE INDEX IF NOT EXISTS idx_userId ON reservas(userId)
+                        `, (err) => {
+                          if (err) {
+                            reject(err);
+                            return;
+                          }
+                          
+                          db.run(`
+                            CREATE INDEX IF NOT EXISTS idx_estado ON reservas(estado)
+                          `, (err) => {
+                            if (err) {
+                              reject(err);
+                              return;
+                            }
+                            
+                            // Crear índice de servicio_id solo si la columna existe
+                            db.run(`
+                              CREATE INDEX IF NOT EXISTS idx_reservas_servicio_id ON reservas(servicio_id)
+                            `, (err) => {
+                              // Ignorar si la columna no existe (se agregará en migración)
+                              if (err && err.message && err.message.includes('no such column')) {
+                                // Continuar sin error
+                              } else if (err) {
+                                reject(err);
+                                return;
+                              }
+                              
+                              db.run(`
+                                CREATE INDEX IF NOT EXISTS idx_usuarios_bloqueados_telefono ON usuarios_bloqueados(telefono)
+                              `, (err) => {
+                                if (err) {
+                                  reject(err);
+                                  return;
+                                }
+                                
+                                db.run(`
+                                  CREATE INDEX IF NOT EXISTS idx_usuarios_bloqueados_activo ON usuarios_bloqueados(activo)
+                                `, (err) => {
+                                  if (err) {
+                                    reject(err);
+                                    return;
+                                  }
+                                  
+                                  db.run(`
+                                    CREATE INDEX IF NOT EXISTS idx_interacciones_ia_userId ON interacciones_ia(userId)
+                                  `, (err) => {
+                                    if (err) {
+                                      reject(err);
+                                      return;
+                                    }
+                                    
+                                    db.run(`
+                                      CREATE INDEX IF NOT EXISTS idx_interacciones_ia_fecha ON interacciones_ia(fecha)
+                                    `, (err) => {
+                                      if (err) {
+                                        reject(err);
+                                        return;
+                                      }
+                                      
+                                      db.run(`
+                                        CREATE INDEX IF NOT EXISTS idx_clientes_telefono ON clientes(telefono)
+                                      `, (err) => {
+                                        if (err) {
+                                          reject(err);
+                                          return;
+                                        }
+                                        
+                                        db.run(`
+                                          CREATE INDEX IF NOT EXISTS idx_servicios_activo ON servicios(activo)
+                                        `, (err) => {
+                                          if (err) {
+                                            reject(err);
+                                            return;
+                                          }
+                                          
+                                          db.run(`
+                                            CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)
+                                          `, (err) => {
+                                            if (err) {
+                                              reject(err);
+                                              return;
+                                            }
+                                            
+                                            db.run(`
+                                              CREATE INDEX IF NOT EXISTS idx_logs_nivel ON logs(nivel)
+                                            `, (err) => {
+                                              if (err) {
+                                                reject(err);
+                                                return;
+                                              }
+                                              
+                                              db.close((err) => {
+                                                if (err) {
+                                                  reject(err);
+                                                } else {
+                                                  resolve();
+                                                }
+                                              });
+                                            });
+                                          });
+                                        });
+                                      });
+                                    });
+                                  });
+                                });
+                              });
+                            });
+                          });
+                        });
                       });
-                    }
+                    });
                   });
-                }
+                });
               });
+            });
+          });
+        });
+      });
+    });
+  });
+}
+
+/**
+ * Verifica si hay conflicto de horario con otras reservas
+ * @param {Date} fechaHora - Fecha y hora de inicio de la reserva
+ * @param {number} duracion - Duración en minutos
+ * @param {number} excluirId - ID de reserva a excluir (para actualizaciones)
+ * @returns {Promise<{hayConflicto: boolean, reservaConflictiva?: Object}>}
+ */
+async function verificarConflictoHorario(fechaHora, duracion, excluirId = null) {
+  const db = await abrirDB();
+  
+  return new Promise((resolve, reject) => {
+    const inicio = new Date(fechaHora);
+    const fin = new Date(fechaHora.getTime() + duracion * 60000);
+    
+    // Obtener todas las reservas que puedan tener conflicto (pendientes o confirmadas)
+    // Solo excluir canceladas
+    let query = `
+      SELECT id, fechaHora, duracion, estado, userName, servicio
+      FROM reservas 
+      WHERE fechaHora >= datetime(?, '-1 day')
+        AND fechaHora <= datetime(?, '+1 day')
+        AND estado IN ('pendiente', 'confirmada')
+    `;
+    const params = [inicio.toISOString(), fin.toISOString()];
+    
+    if (excluirId) {
+      query += ' AND id != ?';
+      params.push(excluirId);
+    }
+    
+    db.all(query, params, (err, rows) => {
+      db.close();
+      if (err) {
+        reject(err);
+        return;
+      }
+      
+      // Verificar solapamiento con cada reserva existente
+      for (const row of rows) {
+        const reservaInicio = new Date(row.fechaHora);
+        const reservaDuracion = row.duracion || 60;
+        const reservaFin = new Date(reservaInicio.getTime() + reservaDuracion * 60000);
+        
+        // Verificar si hay solapamiento
+        const haySolapamiento = 
+          (inicio >= reservaInicio && inicio < reservaFin) ||  // Inicio dentro de reserva existente
+          (fin > reservaInicio && fin <= reservaFin) ||         // Fin dentro de reserva existente
+          (inicio <= reservaInicio && fin >= reservaFin);        // Nueva reserva contiene a existente
+        
+        if (haySolapamiento) {
+          resolve({
+            hayConflicto: true,
+            reservaConflictiva: {
+              id: row.id,
+              fechaHora: reservaInicio,
+              duracion: reservaDuracion,
+              estado: row.estado,
+              userName: row.userName,
+              servicio: row.servicio
             }
           });
+          return;
         }
-      });
+      }
+      
+      resolve({ hayConflicto: false });
     });
   });
 }
@@ -109,13 +400,36 @@ async function guardarReserva(reserva) {
     throw new Error(validacion.error || 'Fecha u horario inválido');
   }
   
+  // Verificar conflictos de horario antes de guardar
+  const fechaHoraValidada = validacion.fecha instanceof Date 
+    ? validacion.fecha 
+    : new Date(validacion.fecha);
+  
+  const conflicto = await verificarConflictoHorario(fechaHoraValidada, duracion);
+  
+  if (conflicto.hayConflicto) {
+    const reservaConflictiva = conflicto.reservaConflictiva;
+    const fechaConflictiva = reservaConflictiva.fechaHora.toLocaleString('es-PE', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+    throw new Error(
+      `Ya existe una cita ${reservaConflictiva.estado} en ese horario:\n` +
+      `• ${reservaConflictiva.userName} - ${reservaConflictiva.servicio}\n` +
+      `• ${fechaConflictiva}\n` +
+      `• Duración: ${reservaConflictiva.duracion} minutos`
+    );
+  }
+  
   const db = await abrirDB();
   
   return new Promise((resolve, reject) => {
     const ahora = new Date().toISOString();
-    const fechaHora = validacion.fecha instanceof Date 
-      ? validacion.fecha.toISOString() 
-      : validacion.fecha;
+    const fechaHora = fechaHoraValidada.toISOString();
     
     db.run(`
       INSERT INTO reservas (
@@ -156,9 +470,16 @@ async function obtenerReservas(filtros = {}) {
     let query = 'SELECT * FROM reservas WHERE 1=1';
     const params = [];
     
+    // Soporte para array de estados o estado único
     if (filtros.estado) {
-      query += ' AND estado = ?';
-      params.push(filtros.estado);
+      if (Array.isArray(filtros.estado)) {
+        const placeholders = filtros.estado.map(() => '?').join(',');
+        query += ` AND estado IN (${placeholders})`;
+        params.push(...filtros.estado);
+      } else {
+        query += ' AND estado = ?';
+        params.push(filtros.estado);
+      }
     }
     
     if (filtros.userId) {
@@ -237,13 +558,13 @@ async function consultarDisponibilidad(fecha, duracionMinima = 60) {
       return;
     }
     
-    // Obtener todas las reservas del día
+    // Obtener todas las reservas del día (pendientes y confirmadas, no canceladas)
     db.all(`
       SELECT fechaHora, duracion 
       FROM reservas 
       WHERE fechaHora >= ? 
         AND fechaHora <= ? 
-        AND estado = 'pendiente'
+        AND estado IN ('pendiente', 'confirmada')
       ORDER BY fechaHora ASC
     `, [inicioDia.toISOString(), finDia.toISOString()], (err, rows) => {
       db.close();
@@ -317,43 +638,129 @@ async function consultarDisponibilidad(fecha, duracionMinima = 60) {
 async function actualizarReserva(id, datos) {
   const db = await abrirDB();
   
-  return new Promise((resolve, reject) => {
-    const campos = [];
-    const valores = [];
-    
-    if (datos.estado !== undefined) {
-      campos.push('estado = ?');
-      valores.push(datos.estado);
-    }
-    
-    if (datos.notificado !== undefined) {
-      campos.push('notificado = ?');
-      valores.push(datos.notificado ? 1 : 0);
-    }
-    
+  return new Promise(async (resolve, reject) => {
+    // Si se está actualizando la fecha/hora, verificar conflictos
     if (datos.fechaHora !== undefined) {
-      campos.push('fechaHora = ?');
-      valores.push(datos.fechaHora instanceof Date 
-        ? datos.fechaHora.toISOString() 
-        : datos.fechaHora);
-    }
-    
-    campos.push('actualizada = ?');
-    valores.push(new Date().toISOString());
-    valores.push(id);
-    
-    db.run(`
-      UPDATE reservas 
-      SET ${campos.join(', ')} 
-      WHERE id = ?
-    `, valores, (err) => {
-      db.close();
-      if (err) {
-        reject(err);
-      } else {
-        resolve();
+      // Obtener la duración actual de la reserva
+      db.get('SELECT duracion FROM reservas WHERE id = ?', [id], async (err, row) => {
+        if (err) {
+          db.close();
+          reject(err);
+          return;
+        }
+        
+        const duracion = datos.duracion !== undefined ? datos.duracion : (row?.duracion || 60);
+        const fechaHora = datos.fechaHora instanceof Date 
+          ? datos.fechaHora 
+          : new Date(datos.fechaHora);
+        
+        // Verificar conflictos (excluyendo la reserva actual)
+        try {
+          const conflicto = await verificarConflictoHorario(fechaHora, duracion, id);
+          
+          if (conflicto.hayConflicto) {
+            db.close();
+            const reservaConflictiva = conflicto.reservaConflictiva;
+            const fechaConflictiva = reservaConflictiva.fechaHora.toLocaleString('es-PE', {
+              weekday: 'long',
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit'
+            });
+            reject(new Error(
+              `No se puede actualizar: ya existe una cita ${reservaConflictiva.estado} en ese horario:\n` +
+              `• ${reservaConflictiva.userName} - ${reservaConflictiva.servicio}\n` +
+              `• ${fechaConflictiva}\n` +
+              `• Duración: ${reservaConflictiva.duracion} minutos`
+            ));
+            return;
+          }
+        } catch (error) {
+          db.close();
+          reject(error);
+          return;
+        }
+        
+        // Continuar con la actualización
+        const campos = [];
+        const valores = [];
+        
+        if (datos.estado !== undefined) {
+          campos.push('estado = ?');
+          valores.push(datos.estado);
+        }
+        
+        if (datos.notificado !== undefined) {
+          campos.push('notificado = ?');
+          valores.push(datos.notificado ? 1 : 0);
+        }
+        
+        if (datos.fechaHora !== undefined) {
+          campos.push('fechaHora = ?');
+          valores.push(fechaHora.toISOString());
+        }
+        
+        if (datos.duracion !== undefined) {
+          campos.push('duracion = ?');
+          valores.push(datos.duracion);
+        }
+        
+        campos.push('actualizada = ?');
+        valores.push(new Date().toISOString());
+        valores.push(id);
+        
+        db.run(`
+          UPDATE reservas 
+          SET ${campos.join(', ')} 
+          WHERE id = ?
+        `, valores, (err) => {
+          db.close();
+          if (err) {
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
+    } else {
+      // Si no se actualiza fecha/hora, actualizar normalmente
+      const campos = [];
+      const valores = [];
+      
+      if (datos.estado !== undefined) {
+        campos.push('estado = ?');
+        valores.push(datos.estado);
       }
-    });
+      
+      if (datos.notificado !== undefined) {
+        campos.push('notificado = ?');
+        valores.push(datos.notificado ? 1 : 0);
+      }
+      
+      if (datos.duracion !== undefined) {
+        campos.push('duracion = ?');
+        valores.push(datos.duracion);
+      }
+      
+      campos.push('actualizada = ?');
+      valores.push(new Date().toISOString());
+      valores.push(id);
+      
+      db.run(`
+        UPDATE reservas 
+        SET ${campos.join(', ')} 
+        WHERE id = ?
+      `, valores, (err) => {
+        db.close();
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
+      });
+    }
   });
 }
 
@@ -416,6 +823,847 @@ async function obtenerEstadisticas(fechaDesde, fechaHasta) {
   });
 }
 
+/**
+ * Obtiene un valor de configuración
+ * @param {string} clave - Clave de configuración
+ * @returns {Promise<string|null>} - Valor de la configuración o null si no existe
+ */
+async function obtenerConfiguracion(clave) {
+  const db = await abrirDB();
+  
+  return new Promise((resolve, reject) => {
+    db.get('SELECT valor FROM configuracion WHERE clave = ?', [clave], (err, row) => {
+      db.close();
+      if (err) {
+        reject(err);
+      } else {
+        resolve(row ? row.valor : null);
+      }
+    });
+  });
+}
+
+/**
+ * Establece un valor de configuración
+ * @param {string} clave - Clave de configuración
+ * @param {string} valor - Valor a establecer
+ * @param {string} descripcion - Descripción opcional
+ * @returns {Promise<void>}
+ */
+async function establecerConfiguracion(clave, valor, descripcion = null) {
+  const db = await abrirDB();
+  
+  return new Promise((resolve, reject) => {
+    const ahora = new Date().toISOString();
+    db.run(`
+      INSERT OR REPLACE INTO configuracion (clave, valor, descripcion, actualizada)
+      VALUES (?, ?, ?, ?)
+    `, [clave, valor, descripcion, ahora], (err) => {
+      db.close();
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+/**
+ * Guarda un log en la base de datos
+ * @param {string} nivel - Nivel del log (INFO, ERROR, WARNING, etc.)
+ * @param {string} mensaje - Mensaje del log
+ * @param {Object} datos - Datos adicionales (opcional)
+ * @param {string} userId - ID del usuario (opcional)
+ * @returns {Promise<void>}
+ */
+async function guardarLog(nivel, mensaje, datos = null, userId = null) {
+  const db = await abrirDB();
+  
+  return new Promise((resolve, reject) => {
+    const timestamp = new Date().toISOString();
+    const datosJson = datos ? JSON.stringify(datos) : null;
+    
+    db.run(`
+      INSERT INTO logs (nivel, mensaje, datos, userId, timestamp)
+      VALUES (?, ?, ?, ?, ?)
+    `, [nivel, mensaje, datosJson, userId, timestamp], (err) => {
+      db.close();
+      if (err) {
+        reject(err);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
+
+/**
+ * Obtiene logs con filtros opcionales
+ * @param {Object} filtros - Filtros opcionales (nivel, userId, fechaDesde, fechaHasta, limite)
+ * @returns {Promise<Array>} - Array de logs
+ */
+async function obtenerLogs(filtros = {}) {
+  const db = await abrirDB();
+  
+  return new Promise((resolve, reject) => {
+    let query = 'SELECT * FROM logs WHERE 1=1';
+    const params = [];
+    
+    if (filtros.nivel) {
+      query += ' AND nivel = ?';
+      params.push(filtros.nivel);
+    }
+    
+    if (filtros.userId) {
+      query += ' AND userId = ?';
+      params.push(filtros.userId);
+    }
+    
+    if (filtros.fechaDesde) {
+      query += ' AND timestamp >= ?';
+      params.push(filtros.fechaDesde instanceof Date 
+        ? filtros.fechaDesde.toISOString() 
+        : filtros.fechaDesde);
+    }
+    
+    if (filtros.fechaHasta) {
+      query += ' AND timestamp <= ?';
+      params.push(filtros.fechaHasta instanceof Date 
+        ? filtros.fechaHasta.toISOString() 
+        : filtros.fechaHasta);
+    }
+    
+    query += ' ORDER BY timestamp DESC';
+    
+    if (filtros.limite) {
+      query += ' LIMIT ?';
+      params.push(filtros.limite);
+    } else {
+      query += ' LIMIT 100'; // Límite por defecto
+    }
+    
+    db.all(query, params, (err, rows) => {
+      db.close();
+      if (err) {
+        reject(err);
+      } else {
+        const logs = rows.map(row => ({
+          id: row.id,
+          nivel: row.nivel,
+          mensaje: row.mensaje,
+          datos: row.datos ? JSON.parse(row.datos) : null,
+          userId: row.userId,
+          timestamp: new Date(row.timestamp)
+        }));
+        resolve(logs);
+      }
+    });
+  });
+}
+
+/**
+ * Limpia logs antiguos (más de X días)
+ * @param {number} dias - Días de retención
+ * @returns {Promise<number>} - Número de logs eliminados
+ */
+async function limpiarLogsAntiguos(dias = 30) {
+  const db = await abrirDB();
+  
+  return new Promise((resolve, reject) => {
+    const fechaLimite = new Date();
+    fechaLimite.setDate(fechaLimite.getDate() - dias);
+    
+    db.run(`
+      DELETE FROM logs 
+      WHERE timestamp < ?
+    `, [fechaLimite.toISOString()], function(err) {
+      db.close();
+      if (err) {
+        reject(err);
+      } else {
+        resolve(this.changes);
+      }
+    });
+  });
+}
+
+// ============================================
+// NUEVAS FUNCIONES PARA GESTIÓN DE RESERVAS
+// ============================================
+
+/**
+ * Confirma una reserva por ID
+ * @param {number} id - ID de la reserva
+ * @returns {Promise<boolean>}
+ */
+async function confirmarReserva(id) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.run(
+      'UPDATE reservas SET estado = ?, actualizada = ? WHERE id = ?',
+      ['confirmada', new Date().toISOString(), id],
+      function(err) {
+        db.close();
+        if (err) reject(err);
+        else resolve(this.changes > 0);
+      }
+    );
+  });
+}
+
+/**
+ * Cancela una reserva por ID
+ * @param {number} id - ID de la reserva
+ * @returns {Promise<boolean>}
+ */
+async function cancelarReservaPorId(id) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.run(
+      'UPDATE reservas SET estado = ?, actualizada = ? WHERE id = ?',
+      ['cancelada', new Date().toISOString(), id],
+      function(err) {
+        db.close();
+        if (err) reject(err);
+        else resolve(this.changes > 0);
+      }
+    );
+  });
+}
+
+/**
+ * Modifica fecha y hora de una reserva
+ * @param {number} id - ID de la reserva
+ * @param {Date} nuevaFechaHora - Nueva fecha y hora
+ * @returns {Promise<boolean>}
+ */
+async function modificarFechaHoraReserva(id, nuevaFechaHora) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    // Obtener duración actual
+    db.get('SELECT duracion FROM reservas WHERE id = ?', [id], async (err, row) => {
+      if (err) {
+        db.close();
+        reject(err);
+        return;
+      }
+      
+      const duracion = row?.duracion || 60;
+      
+      // Verificar conflicto antes de actualizar
+      try {
+        const conflicto = await verificarConflictoHorario(nuevaFechaHora, duracion, id);
+        
+        if (conflicto.hayConflicto) {
+          db.close();
+          reject(new Error('Ya existe una cita en ese horario'));
+          return;
+        }
+        
+        db.run(
+          'UPDATE reservas SET fechaHora = ?, actualizada = ? WHERE id = ?',
+          [nuevaFechaHora.toISOString(), new Date().toISOString(), id],
+          function(err) {
+            db.close();
+            if (err) reject(err);
+            else resolve(this.changes > 0);
+          }
+        );
+      } catch (error) {
+        db.close();
+        reject(error);
+      }
+    });
+  });
+}
+
+/**
+ * Obtiene el detalle completo de una reserva por ID
+ * @param {number} id - ID de la reserva
+ * @returns {Promise<Object|null>}
+ */
+async function obtenerDetalleReserva(id) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.get('SELECT * FROM reservas WHERE id = ?', [id], (err, row) => {
+      db.close();
+      if (err) reject(err);
+      else {
+        if (row) {
+          resolve({
+            id: row.id,
+            userId: row.userId,
+            userName: row.userName,
+            servicio: row.servicio,
+            servicio_id: row.servicio_id,
+            fechaHora: new Date(row.fechaHora),
+            duracion: row.duracion,
+            estado: row.estado,
+            deposito: row.deposito,
+            notificado: row.notificado === 1,
+            origen: row.origen,
+            notas: row.notas,
+            creada: new Date(row.creada),
+            actualizada: new Date(row.actualizada)
+          });
+        } else {
+          resolve(null);
+        }
+      }
+    });
+  });
+}
+
+// ============================================
+// FUNCIONES PARA GESTIÓN DE SERVICIOS
+// ============================================
+
+/**
+ * Lista todos los servicios activos
+ * @returns {Promise<Array>}
+ */
+async function listarServicios() {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.all('SELECT * FROM servicios WHERE activo = 1 ORDER BY nombre', [], (err, rows) => {
+      db.close();
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+/**
+ * Agrega un nuevo servicio
+ * @param {string} nombre - Nombre del servicio
+ * @param {number} duracion - Duración en minutos
+ * @param {number} precio - Precio
+ * @param {string} categoria - Categoría (opcional)
+ * @param {string} descripcion - Descripción (opcional)
+ * @returns {Promise<number>} - ID del servicio creado
+ */
+async function agregarServicio(nombre, duracion, precio, categoria = null, descripcion = null) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const ahora = new Date().toISOString();
+    db.run(
+      'INSERT INTO servicios (nombre, duracion, precio, categoria, descripcion, activo, creado, actualizado) VALUES (?, ?, ?, ?, ?, 1, ?, ?)',
+      [nombre, duracion, precio, categoria, descripcion, ahora, ahora],
+      function(err) {
+        db.close();
+        if (err) reject(err);
+        else resolve(this.lastID);
+      }
+    );
+  });
+}
+
+/**
+ * Desactiva un servicio
+ * @param {number} id - ID del servicio
+ * @returns {Promise<boolean>}
+ */
+async function desactivarServicio(id) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.run(
+      'UPDATE servicios SET activo = 0, actualizado = ? WHERE id = ?',
+      [new Date().toISOString(), id],
+      function(err) {
+        db.close();
+        if (err) reject(err);
+        else resolve(this.changes > 0);
+      }
+    );
+  });
+}
+
+/**
+ * Obtiene un servicio por ID
+ * @param {number} id - ID del servicio
+ * @returns {Promise<Object|null>}
+ */
+async function obtenerServicioPorId(id) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.get('SELECT * FROM servicios WHERE id = ?', [id], (err, row) => {
+      db.close();
+      if (err) reject(err);
+      else resolve(row || null);
+    });
+  });
+}
+
+// ============================================
+// FUNCIONES PARA GESTIÓN DE USUARIOS BLOQUEADOS
+// ============================================
+
+/**
+ * Bloquea un usuario
+ * @param {string} telefono - Número de teléfono
+ * @param {string} motivo - Motivo del bloqueo
+ * @param {string} bloqueadoPor - ID del administrador que bloquea
+ * @returns {Promise<number>} - ID del bloqueo
+ */
+async function bloquearUsuario(telefono, motivo = null, bloqueadoPor = null) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.run(
+      'INSERT OR REPLACE INTO usuarios_bloqueados (telefono, motivo, fecha_bloqueo, bloqueado_por, activo) VALUES (?, ?, ?, ?, 1)',
+      [telefono, motivo, new Date().toISOString(), bloqueadoPor],
+      function(err) {
+        db.close();
+        if (err) reject(err);
+        else resolve(this.lastID);
+      }
+    );
+  });
+}
+
+/**
+ * Desbloquea un usuario
+ * @param {string} telefono - Número de teléfono
+ * @returns {Promise<boolean>}
+ */
+async function desbloquearUsuario(telefono) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.run(
+      'UPDATE usuarios_bloqueados SET activo = 0 WHERE telefono = ?',
+      [telefono],
+      function(err) {
+        db.close();
+        if (err) reject(err);
+        else resolve(this.changes > 0);
+      }
+    );
+  });
+}
+
+/**
+ * Verifica si un usuario está bloqueado
+ * @param {string} telefono - Número de teléfono
+ * @returns {Promise<boolean>}
+ */
+async function estaUsuarioBloqueado(telefono) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.get(
+      'SELECT COUNT(*) as count FROM usuarios_bloqueados WHERE telefono = ? AND activo = 1',
+      [telefono],
+      (err, row) => {
+        db.close();
+        if (err) reject(err);
+        else resolve(row.count > 0);
+      }
+    );
+  });
+}
+
+// ============================================
+// FUNCIONES PARA GESTIÓN DE CLIENTES
+// ============================================
+
+/**
+ * Obtiene o crea un cliente
+ * @param {string} telefono - Número de teléfono
+ * @param {string} nombre - Nombre del cliente (opcional)
+ * @returns {Promise<Object>}
+ */
+async function obtenerOCrearCliente(telefono, nombre = null) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.get('SELECT * FROM clientes WHERE telefono = ?', [telefono], (err, row) => {
+      if (err) {
+        db.close();
+        reject(err);
+        return;
+      }
+      
+      if (row) {
+        db.close();
+        resolve(row);
+      } else {
+        // Crear nuevo cliente
+        db.run(
+          'INSERT INTO clientes (telefono, nombre, fecha_creacion) VALUES (?, ?, ?)',
+          [telefono, nombre, new Date().toISOString()],
+          function(err) {
+            if (err) {
+              db.close();
+              reject(err);
+              return;
+            }
+            db.get('SELECT * FROM clientes WHERE id = ?', [this.lastID], (err, newRow) => {
+              db.close();
+              if (err) reject(err);
+              else resolve(newRow);
+            });
+          }
+        );
+      }
+    });
+  });
+}
+
+/**
+ * Obtiene historial completo de un cliente
+ * @param {string} telefono - Número de teléfono
+ * @returns {Promise<Object>}
+ */
+async function obtenerHistorialCliente(telefono) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    // Obtener datos del cliente
+    db.get('SELECT * FROM clientes WHERE telefono = ?', [telefono], (err, cliente) => {
+      if (err) {
+        db.close();
+        reject(err);
+        return;
+      }
+      
+      if (!cliente) {
+        db.close();
+        resolve(null);
+        return;
+      }
+      
+      // Obtener todas las reservas del cliente
+      db.all(
+        'SELECT * FROM reservas WHERE userId LIKE ? ORDER BY fechaHora DESC',
+        [`%${telefono}%`],
+        (err, reservas) => {
+          db.close();
+          if (err) {
+            reject(err);
+            return;
+          }
+          
+          resolve({
+            cliente: cliente,
+            reservas: reservas.map(r => ({
+              ...r,
+              fechaHora: new Date(r.fechaHora),
+              creada: new Date(r.creada),
+              actualizada: new Date(r.actualizada)
+            }))
+          });
+        }
+      );
+    });
+  });
+}
+
+/**
+ * Actualiza notas de un cliente
+ * @param {string} telefono - Número de teléfono
+ * @param {string} notas - Notas a agregar
+ * @returns {Promise<boolean>}
+ */
+async function actualizarNotasCliente(telefono, notas) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.run(
+      'UPDATE clientes SET notas = ? WHERE telefono = ?',
+      [notas, telefono],
+      function(err) {
+        db.close();
+        if (err) reject(err);
+        else resolve(this.changes > 0);
+      }
+    );
+  });
+}
+
+// ============================================
+// FUNCIONES PARA REPORTES
+// ============================================
+
+/**
+ * Genera reporte diario
+ * @param {Date} fecha - Fecha del reporte (opcional, por defecto hoy)
+ * @returns {Promise<Object>}
+ */
+async function generarReporteDiario(fecha = null) {
+  const db = await abrirDB();
+  const fechaConsulta = fecha || new Date();
+  const inicioDia = new Date(fechaConsulta);
+  inicioDia.setHours(0, 0, 0, 0);
+  const finDia = new Date(fechaConsulta);
+  finDia.setHours(23, 59, 59, 999);
+  
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN estado = 'pendiente' THEN 1 ELSE 0 END) as pendientes,
+        SUM(CASE WHEN estado = 'confirmada' THEN 1 ELSE 0 END) as confirmadas,
+        SUM(CASE WHEN estado = 'cancelada' THEN 1 ELSE 0 END) as canceladas,
+        SUM(CASE WHEN DATE(creada) = DATE(?) THEN 1 ELSE 0 END) as creadas_hoy,
+        SUM(CASE WHEN DATE(actualizada) = DATE(?) AND estado = 'cancelada' THEN 1 ELSE 0 END) as canceladas_hoy,
+        SUM(CASE WHEN DATE(actualizada) = DATE(?) AND estado = 'confirmada' THEN 1 ELSE 0 END) as confirmadas_hoy
+      FROM reservas
+      WHERE DATE(fechaHora) = DATE(?)
+    `, [inicioDia.toISOString(), inicioDia.toISOString(), inicioDia.toISOString(), inicioDia.toISOString()], (err, rows) => {
+      db.close();
+      if (err) reject(err);
+      else resolve(rows[0] || {});
+    });
+  });
+}
+
+/**
+ * Genera reporte mensual
+ * @param {number} mes - Mes (1-12)
+ * @param {number} año - Año
+ * @returns {Promise<Object>}
+ */
+async function generarReporteMensual(mes, año) {
+  const db = await abrirDB();
+  
+  return new Promise((resolve, reject) => {
+    const mesStr = String(mes).padStart(2, '0');
+    const añoStr = String(año);
+    
+    db.all(`
+      SELECT 
+        COUNT(*) as total,
+        SUM(CASE WHEN estado = 'pendiente' THEN 1 ELSE 0 END) as pendientes,
+        SUM(CASE WHEN estado = 'confirmada' THEN 1 ELSE 0 END) as confirmadas,
+        SUM(CASE WHEN estado = 'cancelada' THEN 1 ELSE 0 END) as canceladas,
+        SUM(CASE WHEN strftime('%m', creada) = ? AND strftime('%Y', creada) = ? THEN 1 ELSE 0 END) as creadas_mes,
+        SUM(CASE WHEN strftime('%m', actualizada) = ? AND strftime('%Y', actualizada) = ? AND estado = 'cancelada' THEN 1 ELSE 0 END) as canceladas_mes,
+        SUM(CASE WHEN strftime('%m', actualizada) = ? AND strftime('%Y', actualizada) = ? AND estado = 'confirmada' THEN 1 ELSE 0 END) as confirmadas_mes
+      FROM reservas
+      WHERE strftime('%m', fechaHora) = ? AND strftime('%Y', fechaHora) = ?
+    `, [mesStr, añoStr, mesStr, añoStr, mesStr, añoStr, mesStr, añoStr], (err, rows) => {
+      db.close();
+      if (err) reject(err);
+      else resolve(rows[0] || {});
+    });
+  });
+}
+
+/**
+ * Obtiene top servicios más solicitados
+ * @param {number} limite - Cantidad de servicios a retornar (default: 10)
+ * @returns {Promise<Array>}
+ */
+async function obtenerTopServicios(limite = 10) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.all(`
+      SELECT 
+        servicio,
+        COUNT(*) as total_reservas,
+        SUM(CASE WHEN estado = 'confirmada' THEN 1 ELSE 0 END) as confirmadas,
+        SUM(CASE WHEN estado = 'cancelada' THEN 1 ELSE 0 END) as canceladas
+      FROM reservas
+      WHERE estado != 'cancelada'
+      GROUP BY servicio
+      ORDER BY total_reservas DESC
+      LIMIT ?
+    `, [limite], (err, rows) => {
+      db.close();
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+// ============================================
+// FUNCIONES PARA INTERACCIONES IA
+// ============================================
+
+/**
+ * Registra una interacción IA de un usuario
+ * @param {string} userId - ID del usuario
+ * @returns {Promise<number>} - Cantidad de interacciones del día
+ */
+async function registrarInteraccionIA(userId) {
+  const db = await abrirDB();
+  const hoy = new Date().toISOString().split('T')[0];
+  
+  return new Promise((resolve, reject) => {
+    db.run(`
+      INSERT INTO interacciones_ia (userId, fecha, cantidad)
+      VALUES (?, ?, 1)
+      ON CONFLICT(userId, fecha) DO UPDATE SET cantidad = cantidad + 1
+    `, [userId, hoy], function(err) {
+      if (err) {
+        db.close();
+        reject(err);
+        return;
+      }
+      
+      // Obtener cantidad actual
+      db.get(
+        'SELECT cantidad FROM interacciones_ia WHERE userId = ? AND fecha = ?',
+        [userId, hoy],
+        (err, row) => {
+          db.close();
+          if (err) reject(err);
+          else resolve(row ? row.cantidad : 0);
+        }
+      );
+    });
+  });
+}
+
+/**
+ * Obtiene cantidad de interacciones IA de un usuario hoy
+ * @param {string} userId - ID del usuario
+ * @returns {Promise<number>}
+ */
+async function obtenerInteraccionesIAHoy(userId) {
+  const db = await abrirDB();
+  const hoy = new Date().toISOString().split('T')[0];
+  
+  return new Promise((resolve, reject) => {
+    db.get(
+      'SELECT cantidad FROM interacciones_ia WHERE userId = ? AND fecha = ?',
+      [userId, hoy],
+      (err, row) => {
+        db.close();
+        if (err) reject(err);
+        else resolve(row ? row.cantidad : 0);
+      }
+    );
+  });
+}
+
+/**
+ * Verifica si un usuario puede usar IA (no excedió el límite)
+ * @param {string} userId - ID del usuario
+ * @returns {Promise<{puede: boolean, cantidad: number, limite: number}>}
+ */
+async function puedeUsarIA(userId) {
+  const limite = await obtenerConfiguracion('limite_ia_por_usuario');
+  const limiteNum = parseInt(limite || '10', 10);
+  const cantidad = await obtenerInteraccionesIAHoy(userId);
+  
+  return {
+    puede: cantidad < limiteNum,
+    cantidad: cantidad,
+    limite: limiteNum
+  };
+}
+
+/**
+ * Migra la base de datos agregando nuevas tablas y columnas
+ */
+async function migrarBaseDatos() {
+  const db = await abrirDB();
+  
+  return new Promise((resolve, reject) => {
+    db.serialize(() => {
+      // Agregar nuevas columnas a reservas si no existen (SQLite no soporta ALTER TABLE ADD COLUMN IF NOT EXISTS)
+      db.run('ALTER TABLE reservas ADD COLUMN servicio_id INTEGER', () => {});
+      db.run('ALTER TABLE reservas ADD COLUMN origen TEXT DEFAULT "bot"', () => {});
+      db.run('ALTER TABLE reservas ADD COLUMN notas TEXT', () => {});
+      
+      // Crear tabla servicios
+      db.run(`
+        CREATE TABLE IF NOT EXISTS servicios (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          nombre TEXT NOT NULL UNIQUE,
+          duracion INTEGER NOT NULL,
+          precio REAL NOT NULL,
+          activo INTEGER DEFAULT 1 CHECK(activo IN (0, 1)),
+          categoria TEXT,
+          descripcion TEXT,
+          creado TEXT NOT NULL,
+          actualizado TEXT NOT NULL
+        )
+      `, (err) => {
+        if (err) {
+          db.close();
+          reject(err);
+          return;
+        }
+        
+        // Crear tabla usuarios_bloqueados
+        db.run(`
+          CREATE TABLE IF NOT EXISTS usuarios_bloqueados (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telefono TEXT NOT NULL UNIQUE,
+            motivo TEXT,
+            fecha_bloqueo TEXT NOT NULL,
+            bloqueado_por TEXT,
+            activo INTEGER DEFAULT 1 CHECK(activo IN (0, 1))
+          )
+        `, (err) => {
+          if (err) {
+            db.close();
+            reject(err);
+            return;
+          }
+          
+          // Crear tabla interacciones_ia
+          db.run(`
+            CREATE TABLE IF NOT EXISTS interacciones_ia (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              userId TEXT NOT NULL,
+              fecha TEXT NOT NULL,
+              cantidad INTEGER DEFAULT 1,
+              UNIQUE(userId, fecha)
+            )
+          `, (err) => {
+            if (err) {
+              db.close();
+              reject(err);
+              return;
+            }
+            
+            // Crear tabla clientes
+            db.run(`
+              CREATE TABLE IF NOT EXISTS clientes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telefono TEXT NOT NULL UNIQUE,
+                nombre TEXT,
+                fecha_creacion TEXT NOT NULL,
+                notas TEXT,
+                total_reservas INTEGER DEFAULT 0,
+                reservas_canceladas INTEGER DEFAULT 0,
+                ultima_reserva TEXT
+              )
+            `, (err) => {
+              if (err) {
+                db.close();
+                reject(err);
+                return;
+              }
+              
+              // Crear índices
+              db.run('CREATE INDEX IF NOT EXISTS idx_usuarios_bloqueados_telefono ON usuarios_bloqueados(telefono)', () => {});
+              db.run('CREATE INDEX IF NOT EXISTS idx_usuarios_bloqueados_activo ON usuarios_bloqueados(activo)', () => {});
+              db.run('CREATE INDEX IF NOT EXISTS idx_interacciones_ia_userId ON interacciones_ia(userId)', () => {});
+              db.run('CREATE INDEX IF NOT EXISTS idx_interacciones_ia_fecha ON interacciones_ia(fecha)', () => {});
+              db.run('CREATE INDEX IF NOT EXISTS idx_clientes_telefono ON clientes(telefono)', () => {});
+              db.run('CREATE INDEX IF NOT EXISTS idx_servicios_activo ON servicios(activo)', () => {});
+              
+              // Agregar valores por defecto a configuracion
+              const ahora = new Date().toISOString();
+              db.run(`
+                INSERT OR IGNORE INTO configuracion (clave, valor, descripcion, actualizada)
+                VALUES 
+                  ('modo_ia', 'auto', 'Modo de IA: auto, manual, solo_faq', ?),
+                  ('limite_ia_por_usuario', '10', 'Cantidad máxima de respuestas IA por usuario por día', ?),
+                  ('horas_confirmacion_automatica', '24', 'Horas para confirmación automática si no hay respuesta', ?)
+              `, [ahora, ahora, ahora], (err) => {
+                db.close();
+                if (err) reject(err);
+                else resolve();
+              });
+            });
+          });
+        });
+      });
+    });
+  });
+}
+
 module.exports = {
   inicializarDB,
   guardarReserva,
@@ -424,6 +1672,33 @@ module.exports = {
   actualizarReserva,
   eliminarReserva,
   obtenerEstadisticas,
+  verificarConflictoHorario,
+  obtenerConfiguracion,
+  establecerConfiguracion,
+  guardarLog,
+  obtenerLogs,
+  limpiarLogsAntiguos,
+  confirmarReserva,
+  cancelarReservaPorId,
+  modificarFechaHoraReserva,
+  obtenerDetalleReserva,
+  listarServicios,
+  agregarServicio,
+  desactivarServicio,
+  obtenerServicioPorId,
+  bloquearUsuario,
+  desbloquearUsuario,
+  estaUsuarioBloqueado,
+  obtenerOCrearCliente,
+  obtenerHistorialCliente,
+  actualizarNotasCliente,
+  generarReporteDiario,
+  generarReporteMensual,
+  obtenerTopServicios,
+  registrarInteraccionIA,
+  obtenerInteraccionesIAHoy,
+  puedeUsarIA,
+  migrarBaseDatos,
   DB_PATH
 };
 

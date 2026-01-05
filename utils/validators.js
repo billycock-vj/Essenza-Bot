@@ -209,6 +209,30 @@ function sanitizarDatosParaLog(data) {
   return sanitizado;
 }
 
+/**
+ * Fuzzy matching para errores de escritura y coincidencias flexibles
+ * @param {string} input - Texto de entrada
+ * @param {string} target - Texto objetivo
+ * @param {number} threshold - Umbral de similitud (0-1, default: 0.7)
+ * @returns {boolean} - true si hay coincidencia
+ */
+function fuzzyMatch(input, target, threshold = 0.7) {
+  const inputLower = input.toLowerCase();
+  const targetLower = target.toLowerCase();
+
+  if (inputLower === targetLower) return true;
+  if (inputLower.includes(targetLower) || targetLower.includes(inputLower))
+    return true;
+
+  // Calcular similitud simple (Levenshtein simplificado)
+  let matches = 0;
+  const minLen = Math.min(inputLower.length, targetLower.length);
+  for (let i = 0; i < minLen; i++) {
+    if (inputLower[i] === targetLower[i]) matches++;
+  }
+  return matches / Math.max(inputLower.length, targetLower.length) >= threshold;
+}
+
 module.exports = {
   validarFormatoUserId,
   validarFecha,
@@ -216,5 +240,6 @@ module.exports = {
   sanitizarMensaje,
   sanitizarDatosParaLog,
   obtenerHorarioDelDia,
+  fuzzyMatch
 };
 
