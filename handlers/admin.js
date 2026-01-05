@@ -172,7 +172,7 @@ async function obtenerCitasDelDia(fecha = null) {
       const estadoEmoji = reserva.estado === 'confirmada' ? '✅' : 
                           reserva.estado === 'cancelada' ? '❌' : '⏳';
       
-      mensaje += `${index + 1}. ${estadoEmoji} *${hora}*\n`;
+      mensaje += `${index + 1}. ${estadoEmoji} *ID: ${reserva.id}* - ${hora}\n`;
       mensaje += `   👤 ${reserva.userName}\n`;
       mensaje += `   💆 ${reserva.servicio}\n`;
       mensaje += `   ⏱️ ${reserva.duracion} min\n`;
@@ -287,7 +287,7 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
         });
         const estadoEmoji = r.estado === 'confirmada' ? '✅' : '⏳';
         
-        mensaje += `${idx + 1}. ${estadoEmoji} *${fechaHora}*\n`;
+        mensaje += `${idx + 1}. ${estadoEmoji} *ID: ${r.id}* - ${fechaHora}\n`;
         mensaje += `   👤 ${r.userName}\n`;
         mensaje += `   💆 ${r.servicio}\n`;
         mensaje += `   📱 ${extraerNumero(r.userId)}\n`;
@@ -849,13 +849,78 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
       const nuevaFechaHoraStr = match[2].trim();
       
       try {
-        // Intentar parsear la fecha/hora (formato flexible)
-        const nuevaFechaHora = new Date(nuevaFechaHoraStr);
-        if (isNaN(nuevaFechaHora.getTime())) {
+        // Parser mejorado de fecha/hora con múltiples formatos
+        let nuevaFechaHora = null;
+        
+        // Formato 1: "15/01/2026 14:30" o "15/01/2026 2:30 PM"
+        const formato1 = nuevaFechaHoraStr.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?:\s*(AM|PM))?/i);
+        if (formato1) {
+          let dia = parseInt(formato1[1]);
+          let mes = parseInt(formato1[2]) - 1; // Mes es 0-indexed
+          let año = parseInt(formato1[3]);
+          let hora = parseInt(formato1[4]);
+          let minuto = parseInt(formato1[5]);
+          const ampm = formato1[6]?.toUpperCase();
+          
+          if (ampm === 'PM' && hora < 12) hora += 12;
+          if (ampm === 'AM' && hora === 12) hora = 0;
+          
+          nuevaFechaHora = new Date(año, mes, dia, hora, minuto);
+        }
+        
+        // Formato 2: "15-01-2026 14:30"
+        if (!nuevaFechaHora || isNaN(nuevaFechaHora.getTime())) {
+          const formato2 = nuevaFechaHoraStr.match(/(\d{1,2})-(\d{1,2})-(\d{4})\s+(\d{1,2}):(\d{2})/);
+          if (formato2) {
+            let dia = parseInt(formato2[1]);
+            let mes = parseInt(formato2[2]) - 1;
+            let año = parseInt(formato2[3]);
+            let hora = parseInt(formato2[4]);
+            let minuto = parseInt(formato2[5]);
+            nuevaFechaHora = new Date(año, mes, dia, hora, minuto);
+          }
+        }
+        
+        // Formato 3: "15/01/2026" (solo fecha, usar hora por defecto 14:00)
+        if (!nuevaFechaHora || isNaN(nuevaFechaHora.getTime())) {
+          const formato3 = nuevaFechaHoraStr.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+          if (formato3) {
+            let dia = parseInt(formato3[1]);
+            let mes = parseInt(formato3[2]) - 1;
+            let año = parseInt(formato3[3]);
+            nuevaFechaHora = new Date(año, mes, dia, 14, 0); // Hora por defecto: 2 PM
+          }
+        }
+        
+        // Formato 4: ISO o formato estándar de JavaScript
+        if (!nuevaFechaHora || isNaN(nuevaFechaHora.getTime())) {
+          nuevaFechaHora = new Date(nuevaFechaHoraStr);
+        }
+        
+        // Validar que la fecha sea válida y futura
+        if (!nuevaFechaHora || isNaN(nuevaFechaHora.getTime())) {
           await enviarMensajeSeguro(
             client,
             userId,
-            `❌ Formato de fecha/hora inválido.\n\nEjemplo: modificar cita 123 15/01/2026 14:30`
+            `❌ Formato de fecha/hora inválido.\n\n` +
+            `Formatos aceptados:\n` +
+            `• 15/01/2026 14:30\n` +
+            `• 15/01/2026 2:30 PM\n` +
+            `• 15-01-2026 14:30\n` +
+            `• 15/01/2026 (usa hora 14:00 por defecto)\n` +
+            `• 2026-01-15T14:30:00\n\n` +
+            `Ejemplo: modificar cita 123 15/01/2026 14:30`
+          );
+          return true;
+        }
+        
+        // Validar que la fecha no sea en el pasado
+        if (nuevaFechaHora < new Date()) {
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            `❌ La fecha/hora debe ser en el futuro.\n\n` +
+            `Fecha ingresada: ${nuevaFechaHora.toLocaleString('es-PE')}`
           );
           return true;
         }

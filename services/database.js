@@ -513,12 +513,15 @@ async function obtenerReservas(filtros = {}) {
           id: row.id,
           userId: row.userId,
           userName: row.userName,
+          servicio_id: row.servicio_id || null,
           servicio: row.servicio,
           fechaHora: new Date(row.fechaHora),
           duracion: row.duracion,
           estado: row.estado,
           deposito: row.deposito,
           notificado: row.notificado === 1,
+          origen: row.origen || 'bot',
+          notas: row.notas || null,
           creada: new Date(row.creada),
           actualizada: new Date(row.actualizada)
         }));

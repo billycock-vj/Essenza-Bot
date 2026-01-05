@@ -305,15 +305,15 @@ async function activarFlujoReserva(client, userId, userName, estadisticas) {
     });
   }
 
-  // Enviar notificación a administradores
+  // Enviar notificación solo a administradores específicos para reservas
   try {
-    const ADMIN_NUMBERS = config.ADMIN_NUMBERS;
+    const RESERVA_ADMIN_NUMBERS = config.RESERVA_ADMIN_NUMBERS || config.ADMIN_NUMBERS;
     const mensajeNotificacion = `🔔 *NUEVA SOLICITUD DE RESERVA*\n\n` +
       `Usuario: ${userName}\n` +
       `Número: ${extraerNumero(userId)}\n\n` +
       `Por favor contacta al cliente para confirmar los detalles.`;
     
-    for (const adminId of ADMIN_NUMBERS) {
+    for (const adminId of RESERVA_ADMIN_NUMBERS) {
       try {
         await enviarMensajeSeguro(client, adminId, mensajeNotificacion);
       } catch (error) {
@@ -322,7 +322,7 @@ async function activarFlujoReserva(client, userId, userName, estadisticas) {
         });
       }
     }
-    logMessage("SUCCESS", `Notificación de reserva enviada al administrador`);
+    logMessage("SUCCESS", `Notificación de reserva enviada a administradores de reservas`);
   } catch (error) {
     logMessage("WARNING", `Error al notificar al administrador (no crítico)`, {
       error: error.message,

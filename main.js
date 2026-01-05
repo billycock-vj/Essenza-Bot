@@ -316,12 +316,12 @@ if (estadisticasCargadas) {
   };
 } else {
   estadisticas = {
-    usuariosAtendidos: new Set(),
-    totalMensajes: 0,
-    reservasSolicitadas: 0,
-    asesoresActivados: 0,
-    inicio: new Date(),
-  };
+  usuariosAtendidos: new Set(),
+  totalMensajes: 0,
+  reservasSolicitadas: 0,
+  asesoresActivados: 0,
+  inicio: new Date(),
+};
 }
 
 // Cargar reservas persistidas
@@ -983,18 +983,48 @@ async function limpiarArchivosBloqueados() {
       }
     }
 
-    // Si Preferences sigue existiendo y no se pudo eliminar, intentar renombrarlo
+    // Intentar liberar Preferences si está bloqueado
     if (fs.existsSync(preferencesPath)) {
+      let preferencesLiberado = false;
+      
+      // Primero verificar si está bloqueado intentando leerlo
       try {
-        const backupPath = preferencesPath + ".backup." + Date.now();
-        fs.renameSync(preferencesPath, backupPath);
-        logMessage("SUCCESS", "Preferences renombrado como backup");
-        limpiados++;
-      } catch (err) {
-        logMessage(
-          "WARNING",
-          "No se pudo renombrar Preferences. Puede estar bloqueado por otro proceso."
-        );
+        const fd = fs.openSync(preferencesPath, 'r+');
+        fs.closeSync(fd);
+        preferencesLiberado = true;
+      } catch (accessError) {
+        // Está bloqueado, intentar liberarlo
+        logMessage("INFO", "Preferences está bloqueado, intentando liberarlo...");
+        
+        // Intentar renombrar con múltiples intentos
+        for (let i = 0; i < 10; i++) {
+          try {
+            const backupPath = preferencesPath + ".backup." + Date.now();
+            fs.renameSync(preferencesPath, backupPath);
+            logMessage("SUCCESS", "Preferences renombrado como backup y liberado");
+            limpiados++;
+            preferencesLiberado = true;
+            break;
+          } catch (err) {
+            if (i < 9) {
+              // Esperar progresivamente más tiempo en cada intento
+              const waitTime = (i + 1) * 500;
+              await new Promise(resolve => setTimeout(resolve, waitTime));
+            } else {
+              logMessage(
+                "WARNING",
+                "No se pudo liberar Preferences después de 10 intentos. El archivo puede estar bloqueado por otro proceso."
+              );
+              logMessage("INFO", "Sugerencia: Cierra todas las instancias de Chrome/Chromium y reinicia el bot.");
+            }
+          }
+        }
+      }
+      
+      // Si no se pudo liberar, esperar un poco más antes de continuar
+      if (!preferencesLiberado) {
+        logMessage("INFO", "Esperando 3 segundos adicionales para que se libere Preferences...");
+        await new Promise(resolve => setTimeout(resolve, 3000));
       }
     }
 
@@ -1019,15 +1049,26 @@ async function limpiarArchivosBloqueados() {
 let clientInstance = null;
 let sessionName = "essenza-bot"; // Variable global para el nombre de sesión
 
-// Limpiar archivos bloqueados antes de iniciar (ejecutar de forma asíncrona)
+// Limpiar archivos bloqueados antes de iniciar (esperar a que termine)
 logMessage("INFO", "Verificando y limpiando archivos bloqueados...");
 (async () => {
   try {
-    await limpiarArchivosBloqueados();
+    const limpiado = await limpiarArchivosBloqueados();
+    if (limpiado) {
+      logMessage("INFO", "Esperando 2 segundos adicionales para asegurar que los archivos se liberen...");
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    logMessage("INFO", "Iniciando bot...");
+    iniciarBot();
   } catch (error) {
     logMessage("WARNING", "Error al limpiar archivos bloqueados (no crítico)", {
       error: error.message
     });
+    // Intentar iniciar de todas formas después de un delay
+    setTimeout(() => {
+      logMessage("INFO", "Iniciando bot después de limpieza...");
+      iniciarBot();
+    }, 3000);
   }
 })();
 
@@ -1036,28 +1077,49 @@ const tokensPath = path.join(__dirname, "tokens", "essenza-bot");
 const defaultPath = path.join(tokensPath, "Default");
 const preferencesPath = path.join(defaultPath, "Preferences");
 
-// Variable para almacenar la ruta del user-data-dir (puede ser temporal)
+// Variable para almacenar la ruta del user-data-dir
+// SIEMPRE usar el mismo directorio para mantener la sesión persistente
 let userDataDir = path.join(__dirname, "tokens", "essenza-bot");
 
-// Verificar si Preferences está bloqueado intentando acceder a él
-let carpetaBloqueada = false;
-if (fs.existsSync(preferencesPath)) {
+// Verificar si existe una sesión guardada válida
+function verificarSesionGuardada() {
+  const sessionFiles = [
+    path.join(defaultPath, "Local Storage"),
+    path.join(defaultPath, "Session Storage"),
+    path.join(defaultPath, "IndexedDB"),
+    path.join(defaultPath, "Cookies"),
+  ];
+
+  const hasValidSession = sessionFiles.some((file) => {
+    try {
+      return fs.existsSync(file);
+    } catch {
+      return false;
+    }
+  });
+
+  return hasValidSession;
+}
+
+// Función para verificar si Preferences está bloqueado
+function verificarPreferencesBloqueado() {
+  if (!fs.existsSync(preferencesPath)) {
+    return false;
+  }
+  
   try {
     // Intentar abrir el archivo en modo de escritura para verificar si está bloqueado
     const fd = fs.openSync(preferencesPath, 'r+');
     fs.closeSync(fd);
+    return false; // No está bloqueado
   } catch (accessError) {
-    // Si no se puede abrir (probablemente está bloqueado por Chrome), usar carpeta temporal
-    carpetaBloqueada = true;
-    logMessage(
-      "WARNING",
-      "Carpeta Default bloqueada (probablemente por Chrome). Usando carpeta temporal para la sesión."
-    );
+    // Si no se puede abrir, está bloqueado
+    return true;
   }
 }
 
-// Si la carpeta está bloqueada, usar carpeta temporal
-if (carpetaBloqueada) {
+// Función para crear carpeta temporal
+function crearCarpetaTemporal() {
   const timestamp = Date.now();
   const tempSessionName = `essenza-bot-temp-${timestamp}`;
   const tempTokensPath = path.join(__dirname, "tokens", tempSessionName);
@@ -1071,85 +1133,52 @@ if (carpetaBloqueada) {
   userDataDir = tempTokensPath;
   
   logMessage(
-    "INFO",
-    `Usando carpeta temporal para la sesión: ${tempSessionName}`
+    "WARNING",
+    `Usando carpeta temporal: ${tempSessionName}. La sesión puede no persistir.`
   );
+  
+  return true;
+}
+
+// Verificar si existe una sesión guardada válida ANTES de hacer cualquier cambio
+const tieneSesionGuardada = verificarSesionGuardada();
+const preferencesBloqueado = verificarPreferencesBloqueado();
+
+if (tieneSesionGuardada && !preferencesBloqueado) {
+  logMessage(
+    "SUCCESS",
+    "✅ Sesión guardada encontrada. El bot se conectará automáticamente sin necesidad de escanear QR."
+  );
+  // Asegurar que usamos el directorio correcto
+  sessionName = "essenza-bot";
+  userDataDir = path.join(__dirname, "tokens", "essenza-bot");
+} else if (preferencesBloqueado) {
+  // Si Preferences está bloqueado, usar carpeta temporal
+  logMessage(
+    "WARNING",
+    "Preferences está bloqueado. Usando carpeta temporal para evitar errores."
+  );
+  crearCarpetaTemporal();
+} else {
   logMessage(
     "INFO",
-    `Ruta temporal: ${tempTokensPath}`
+    "No se encontró sesión guardada. Necesitarás escanear el QR la primera vez."
   );
-} else {
-  // Verificar si hay una sesión guardada válida antes de renombrar
-  // Solo renombrar si Preferences está bloqueado Y no hay archivos de sesión importantes
-  if (fs.existsSync(preferencesPath)) {
-    // Verificar si hay archivos de sesión importantes (como Local Storage)
-    const sessionFiles = [
-      path.join(defaultPath, "Local Storage"),
-      path.join(defaultPath, "Session Storage"),
-      path.join(defaultPath, "IndexedDB"),
-    ];
-
-    const hasSessionData = sessionFiles.some((file) => {
-      try {
-        return fs.existsSync(file) && fs.statSync(file).isDirectory();
-      } catch {
-        return false;
-      }
-    });
-
-    if (!hasSessionData) {
-      // Solo renombrar si no hay datos de sesión importantes
-      try {
-        const timestamp = Date.now();
-        const backupPath = path.join(tokensPath, `Default.backup.${timestamp}`);
-        if (fs.existsSync(defaultPath)) {
-          fs.renameSync(defaultPath, backupPath);
-          logMessage(
-            "SUCCESS",
-            `Carpeta Default renombrada (sin datos de sesión). El bot creara una nueva.`
-          );
-        }
-      } catch (renameError) {
-        // Si no se puede renombrar, usar un nombre de sesión temporal
-        logMessage(
-          "WARNING",
-          "No se pudo renombrar carpeta Default. Usando sesion temporal.",
-          {
-            error: renameError.message,
-          }
-        );
-        const timestamp = Date.now();
-        const tempSessionName = `essenza-bot-${timestamp}`;
-        const tempTokensPath = path.join(__dirname, "tokens", tempSessionName);
-        
-        if (!fs.existsSync(tempTokensPath)) {
-          fs.mkdirSync(tempTokensPath, { recursive: true });
-        }
-        
-        sessionName = tempSessionName;
-        userDataDir = tempTokensPath;
-        logMessage("INFO", `Usando nombre de sesion temporal: ${sessionName}`);
-      }
-    } else {
-      logMessage(
-        "INFO",
-        "Sesión guardada encontrada. Manteniendo carpeta Default para preservar la sesión."
-      );
-    }
+  // Usar el directorio estándar para mantener la sesión
+  sessionName = "essenza-bot";
+  userDataDir = path.join(__dirname, "tokens", "essenza-bot");
+  
+  // Asegurar que el directorio existe
+  if (!fs.existsSync(userDataDir)) {
+    fs.mkdirSync(userDataDir, { recursive: true });
   }
 }
 
 // La función inicializarServidorQR() ya está definida e inicializada al inicio del archivo
 // No es necesario duplicarla aquí
 
-// Esperar un momento para que los archivos se liberen antes de iniciar el bot
-setTimeout(() => {
-  try {
-    iniciarBot();
-  } catch (error) {
-    logMessage("ERROR", "Error al iniciar bot", { error: error.message });
-  }
-}, 2000);
+// La función iniciarBot() ahora se llama desde la limpieza de archivos
+// No es necesario llamarla aquí también
 
 function iniciarBot() {
   wppconnect
@@ -1157,6 +1186,9 @@ function iniciarBot() {
       session: sessionName,
       autoClose: false, // Mantener la sesión abierta
       disableWelcome: true, // Deshabilitar mensaje de bienvenida
+      multiDevice: true, // Habilitar modo multi-dispositivo para mejor persistencia
+      folderNameToken: 'tokens', // Directorio donde se guardan los tokens
+      mkdirFolderToken: '', // No crear subdirectorio adicional
       catchQR: async (base64Qr, asciiQR, attempts, urlCode) => {
         console.clear();
         console.log("\n" + "=".repeat(70));
@@ -1172,8 +1204,8 @@ function iniciarBot() {
             qrData = urlCode;
             qrUrl = urlCode;
           } else if (
-            base64Qr &&
-            typeof base64Qr === "string" &&
+              base64Qr &&
+              typeof base64Qr === "string" &&
             (base64Qr.includes("http") || base64Qr.length > 100)
           ) {
             const urlMatch = base64Qr.match(/https?:\/\/[^\s]+/);
@@ -1256,11 +1288,19 @@ function iniciarBot() {
         if (statusSession === "isLogged") {
           console.log("\n✅ SESIÓN INICIADA - Bot conectado y listo\n");
           logMessage("SUCCESS", "Sesión iniciada correctamente - No necesitas escanear QR");
+          // Limpiar QR del servidor cuando la sesión está activa
+          currentQRData = null;
+          currentQRUrl = null;
         } else if (statusSession === "notLogged") {
           logMessage("INFO", "Sesión no encontrada - Necesitas escanear el QR");
         } else if (statusSession === "qrReadSuccess") {
           console.log("\n✅ QR ESCANEADO EXITOSAMENTE - Apareamiento completado\n");
           logMessage("SUCCESS", "QR escaneado exitosamente - Apareamiento completado");
+          // Limpiar QR del servidor después de escanear
+          currentQRData = null;
+          currentQRUrl = null;
+        } else if (statusSession === "chatsAvailable") {
+          logMessage("INFO", "Chats disponibles - Sesión activa");
         } else if (LOG_LEVEL === 'verbose' || LOG_LEVEL === 'debug') {
           logMessage("INFO", `Estado de sesión: ${statusSession}`, { session });
         }
@@ -1299,77 +1339,54 @@ function iniciarBot() {
     .catch((error) => {
       logMessage("ERROR", "Error al crear cliente", { error: error.message });
 
-      // Si el error es EPERM (permisos), intentar limpiar el archivo bloqueado
+      // Si el error es EPERM (permisos) o Protocol error, usar carpeta temporal
       if (
         error.message &&
         (error.message.includes("EPERM") ||
-          error.message.includes("operation not permitted"))
+          error.message.includes("operation not permitted") ||
+          error.message.includes("Protocol error") ||
+          error.message.includes("Session closed"))
       ) {
         logMessage(
           "WARNING",
-          "Error de permisos detectado. El archivo Preferences esta bloqueado."
-        );
-        logMessage(
-          "INFO",
-          "Intentando limpiar archivos bloqueados automaticamente..."
+          "Error de permisos o sesión cerrada detectado. Cambiando a carpeta temporal..."
         );
 
-        // Intentar limpiar el archivo bloqueado con varios intentos
-        const limpiarArchivosBloqueados = async (intentos = 0) => {
+        // Intentar limpiar primero
+        (async () => {
           try {
-            const tokensPath = path.join(
-              __dirname,
-              "tokens",
-              "essenza-bot",
-              "Default",
-              "Preferences"
-            );
-            if (fs.existsSync(tokensPath)) {
-              // Intentar eliminar el archivo
-              fs.unlinkSync(tokensPath);
-              logMessage(
-                "SUCCESS",
-                "Archivo Preferences eliminado. Reiniciando en 3 segundos..."
-              );
-              setTimeout(() => {
-                logMessage("INFO", "Reiniciando bot...");
-                process.exit(1); // Se reiniciará automáticamente
-              }, 3000);
-              return;
-            }
-          } catch (unlinkError) {
-            if (intentos < 3) {
+            await limpiarArchivosBloqueados();
+            
+            // Verificar si Preferences sigue bloqueado después de limpiar
+            const sigueBloqueado = verificarPreferencesBloqueado();
+            
+            if (sigueBloqueado) {
               logMessage(
                 "WARNING",
-                `Intento ${intentos + 1} fallido. Reintentando en 2 segundos...`
+                "Preferences sigue bloqueado después de limpiar. Usando carpeta temporal."
               );
-              setTimeout(async () => await limpiarArchivosBloqueados(intentos + 1), 2000);
+              crearCarpetaTemporal();
             } else {
-              logMessage(
-                "ERROR",
-                "No se pudo eliminar Preferences automaticamente."
-              );
-              logMessage("INFO", "Soluciones manuales:");
-              logMessage("INFO", "   1. Ejecuta: .\\limpiar-tokens.ps1");
-              logMessage(
-                "INFO",
-                "   2. O elimina manualmente la carpeta 'tokens'"
-              );
-              logMessage(
-                "INFO",
-                "   3. Asegurate de que no haya otra instancia del bot ejecutandose"
-              );
-              // Continuar con el timeout de reconexión normal
-              setTimeout(() => {
-                logMessage("INFO", "Intentando reconectar...");
-                process.exit(1);
-              }, 10000);
+              logMessage("INFO", "Preferences liberado. Usando carpeta estándar.");
+              sessionName = "essenza-bot";
+              userDataDir = path.join(__dirname, "tokens", "essenza-bot");
             }
+            
+            logMessage("INFO", "Esperando 3 segundos antes de reintentar...");
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            logMessage("INFO", "Reintentando iniciar bot...");
+            iniciarBot();
+          } catch (cleanupError) {
+            logMessage("ERROR", "Error al limpiar archivos", { error: cleanupError.message });
+            logMessage("WARNING", "Usando carpeta temporal como solución alternativa.");
+            crearCarpetaTemporal();
+            
+            setTimeout(() => {
+              logMessage("INFO", "Reintentando iniciar bot con carpeta temporal...");
+              iniciarBot();
+            }, 3000);
           }
-        };
-
-        // Iniciar limpieza después de 1 segundo
-        setTimeout(async () => await limpiarArchivosBloqueados(), 1000);
+        })();
         return; // No continuar con el timeout de reconexión aquí
       }
 
@@ -1379,9 +1396,9 @@ function iniciarBot() {
         // Limpiar archivos antes de reintentar
         (async () => {
           await limpiarArchivosBloqueados();
-          setTimeout(() => {
-            iniciarBot();
-          }, 2000);
+        setTimeout(() => {
+          iniciarBot();
+        }, 2000);
         })();
       }, 10000);
     });
@@ -1449,7 +1466,7 @@ async function start(client) {
   // Manejo de desconexión y reconexión
   client.onStateChange((state) => {
     if (LOG_LEVEL === 'verbose') {
-      logMessage("INFO", `Estado del cliente cambiado: ${state}`);
+    logMessage("INFO", `Estado del cliente cambiado: ${state}`);
     }
     if (state === "CLOSE" || state === "DISCONNECTED") {
       logMessage("WARNING", "Bot desconectado. Intentando reconectar...");
@@ -1459,6 +1476,9 @@ async function start(client) {
             session: sessionName,
             autoClose: false, // Mantener la sesión abierta
             disableWelcome: true, // Deshabilitar mensaje de bienvenida
+            multiDevice: true, // Habilitar modo multi-dispositivo para mejor persistencia
+            folderNameToken: 'tokens', // Directorio donde se guardan los tokens
+            mkdirFolderToken: '', // No crear subdirectorio adicional
             catchQR: () => {},
             headless: true,
             browserArgs: [
@@ -1558,11 +1578,11 @@ async function start(client) {
         (message.from && message.from.includes("status"))
       ) {
         if (LOG_LEVEL === 'verbose') {
-          logMessage("INFO", "Mensaje de estado ignorado", {
-            type: message.type,
-            from: message.from,
-            chatId: message.chatId,
-          });
+        logMessage("INFO", "Mensaje de estado ignorado", {
+          type: message.type,
+          from: message.from,
+          chatId: message.chatId,
+        });
         }
         return;
       }
@@ -1605,11 +1625,11 @@ async function start(client) {
 
       if (!esChatIndividual) {
         if (LOG_LEVEL === 'verbose') {
-          logMessage("INFO", "Mensaje ignorado - no es chat individual válido", {
-            from: message.from,
-            type: message.type,
-            isStatus: message.isStatus,
-          });
+        logMessage("INFO", "Mensaje ignorado - no es chat individual válido", {
+          from: message.from,
+          type: message.type,
+          isStatus: message.isStatus,
+        });
         }
         return; // Solo chats individuales (@c.us o @lid), NO grupos (@g.us) ni estados
       }
@@ -1625,10 +1645,10 @@ async function start(client) {
       ];
       if (message.type && !tiposPermitidos.includes(message.type)) {
         if (LOG_LEVEL === 'verbose') {
-          logMessage("INFO", "Mensaje ignorado - tipo no permitido", {
-            type: message.type,
-            from: message.from,
-          });
+        logMessage("INFO", "Mensaje ignorado - tipo no permitido", {
+          type: message.type,
+          from: message.from,
+        });
         }
         return;
       }
@@ -1700,7 +1720,7 @@ async function start(client) {
         storage.setUserName(userId, nombreExtraido);
         userName = nombreExtraido;
         if (LOG_LEVEL === 'verbose') {
-          logMessage("INFO", `Nombre guardado para usuario: ${userName}`);
+        logMessage("INFO", `Nombre guardado para usuario: ${userName}`);
         }
       }
 
@@ -1710,10 +1730,10 @@ async function start(client) {
       }
 
       if (LOG_LEVEL === 'verbose') {
-        logMessage("INFO", `Mensaje recibido de ${userName}`, {
-          userId: extraerNumero(userId),
-          mensaje: text.substring(0, 50),
-        });
+      logMessage("INFO", `Mensaje recibido de ${userName}`, {
+        userId: extraerNumero(userId),
+        mensaje: text.substring(0, 50),
+      });
       } else {
         // Guardar en archivo sin mostrar en consola
         const timestamp = new Date().toLocaleString("es-PE", {
@@ -1767,6 +1787,23 @@ async function start(client) {
           tipoMensaje: message.type
         });
         
+        // PRIMERO: Procesar comandos de administrador (confirmar, cancelar, modificar, detalle cita, etc.)
+        // Esto procesa todos los comandos nuevos que están en handlers/admin.js
+        const procesadoAdmin = await adminHandler.procesarComandosAdmin(
+          client,
+          message,
+          userId,
+          text,
+          textLower,
+          estadisticas,
+          iaGlobalDesactivada
+        );
+        
+        if (procesadoAdmin) {
+          return; // Si se procesó un comando, salir
+        }
+        
+        // SEGUNDO: Procesar comandos legacy que están en main.js (mantener compatibilidad)
         // Comando: Procesar imagen de cita (solo administradores)
         if (message.type === 'image') {
           console.log(`\n📷 IMAGEN RECIBIDA DE ADMINISTRADOR - PROCESANDO...\n`);
@@ -1781,13 +1818,13 @@ async function start(client) {
           textLower === "estadísticas"
         ) {
           try {
-              await enviarMensajeSeguro(
-                client,
+            await enviarMensajeSeguro(
+              client,
                 userId,
                 obtenerEstadisticas(estadisticas)
-              );
+            );
             if (LOG_LEVEL === 'verbose') {
-              logMessage("INFO", "Estadísticas enviadas al administrador");
+            logMessage("INFO", "Estadísticas enviadas al administrador");
             }
           } catch (error) {
             logMessage("ERROR", "Error al enviar estadísticas", {
@@ -2075,7 +2112,7 @@ async function start(client) {
           }
           return;
         }
-        
+
         if (esActivarIA) {
           console.log(`\n✅ ✅ ✅ COMANDO "ACTIVAR IA" DETECTADO - EJECUTANDO... ✅ ✅ ✅\n`);
           iaGlobalDesactivada = false;
@@ -2135,7 +2172,7 @@ async function start(client) {
               `📊 *Estado de la IA*\n\n${estadoIA}\n\nPara cambiar el estado:\n• *Desactivar IA* - Desactiva la IA globalmente\n• *Activar IA* - Reactiva la IA globalmente`
             );
             if (LOG_LEVEL === 'verbose') {
-              logMessage("INFO", "Estado de IA consultado por el administrador");
+            logMessage("INFO", "Estado de IA consultado por el administrador");
             }
           } catch (error) {
             logMessage("ERROR", "Error al consultar estado de IA", {
@@ -2346,7 +2383,7 @@ async function start(client) {
                 storage.setHumanMode(usuarioEncontrado, false);
               }
               userDataAdmin.botDesactivadoPorAdmin = false;
-              // Reactivar IA si fue desactivada solo por el comando del admin
+                // Reactivar IA si fue desactivada solo por el comando del admin
               userDataAdmin.iaDesactivada = false;
               storage.setUserData(usuarioEncontrado, userDataAdmin);
 
@@ -3128,15 +3165,16 @@ async function start(client) {
           });
         }
 
-        // Enviar notificación a todos los administradores (separado, no crítico si falla)
+        // Enviar notificación solo a administradores específicos para reservas (separado, no crítico si falla)
         try {
+          const RESERVA_ADMIN_NUMBERS = config.RESERVA_ADMIN_NUMBERS || ADMIN_NUMBERS;
           const mensajeNotificacion = `🔔 *NUEVA SOLICITUD DE RESERVA*\n\n` +
-            `Usuario: ${userName}\n` +
-            `Número: ${extraerNumero(userId)}\n\n` +
+              `Usuario: ${userName}\n` +
+              `Número: ${extraerNumero(userId)}\n\n` +
             `Por favor contacta al cliente para confirmar los detalles.`;
           
-          // Enviar a todos los administradores
-          for (const adminId of ADMIN_NUMBERS) {
+          // Enviar solo a administradores de reservas
+          for (const adminId of RESERVA_ADMIN_NUMBERS) {
             try {
               await enviarMensajeSeguro(client, adminId, mensajeNotificacion);
             } catch (error) {
@@ -3147,7 +3185,7 @@ async function start(client) {
           }
           logMessage(
             "SUCCESS",
-            `Notificación de reserva enviada al administrador`
+            `Notificación de reserva enviada a administradores de reservas`
           );
         } catch (error) {
           // Error no crítico - solo loguear, no afectar al usuario
@@ -3345,7 +3383,7 @@ async function start(client) {
         // Si la IA está desactivada o no puede usarse, no responder nada (el asesor maneja)
         const motivo = estaEnReserva ? "modo reserva" : estaEnAsesor ? "modo asesor" : "IA desactivada";
         if (LOG_LEVEL === 'verbose') {
-          logMessage("INFO", `IA desactivada para ${userName} - En ${motivo}`);
+        logMessage("INFO", `IA desactivada para ${userName} - En ${motivo}`);
         }
         return;
       }

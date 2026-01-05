@@ -104,7 +104,13 @@ async function mostrarEstadoCita(client, userId) {
 async function mostrarPrecios(client, userId) {
   try {
     const servicios = await db.listarServicios();
-    const serviciosData = require('../data/services');
+    let serviciosData = null;
+    
+    try {
+      serviciosData = require('../data/services');
+    } catch (e) {
+      // Si no existe el archivo, serviciosData será null
+    }
     
     if (servicios.length === 0 && !serviciosData) {
       await enviarMensajeSeguro(
@@ -116,23 +122,35 @@ async function mostrarPrecios(client, userId) {
     }
     
     let mensaje = `💰 *PRECIOS DE SERVICIOS*\n\n`;
+    let hayServicios = false;
     
     // Si hay servicios en BD, usarlos
     if (servicios.length > 0) {
       servicios.forEach((s) => {
         mensaje += `💆 *${s.nombre}*\n`;
         mensaje += `   ⏱️ ${s.duracion} min - 💰 S/${s.precio}\n\n`;
+        hayServicios = true;
       });
-    } else {
+    } else if (serviciosData) {
       // Usar datos hardcodeados como fallback
       Object.values(serviciosData).forEach(categoria => {
-        if (categoria.opciones) {
+        if (categoria && categoria.opciones && Array.isArray(categoria.opciones)) {
           categoria.opciones.forEach(opcion => {
             mensaje += `💆 *${opcion.nombre}*\n`;
             mensaje += `   ${opcion.duracion} - 💰 ${opcion.precio}\n\n`;
+            hayServicios = true;
           });
         }
       });
+    }
+    
+    if (!hayServicios) {
+      await enviarMensajeSeguro(
+        client,
+        userId,
+        "💰 *Precios*\n\nPor favor contacta con nosotros para conocer nuestros precios."
+      );
+      return true;
     }
     
     mensaje += `💡 *Nota:* Los precios pueden variar. Contacta con nosotros para más información.`;
@@ -141,6 +159,11 @@ async function mostrarPrecios(client, userId) {
     return true;
   } catch (error) {
     logMessage("ERROR", "Error al mostrar precios", { error: error.message });
+    await enviarMensajeSeguro(
+      client,
+      userId,
+      "❌ Error al obtener los precios. Por favor, intenta más tarde."
+    );
     return false;
   }
 }

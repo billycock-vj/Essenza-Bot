@@ -4,11 +4,10 @@ require("dotenv").config();
 // Lista de números de administradores (formato: número sin @c.us)
 // Acepta números con o sin código de país
 // También acepta números completos con @lid o @c.us
-const ADMIN_NUMBERS_RAW = process.env.ADMIN_NUMBERS || "51986613254,51972002363,51983104105,972002363";
+const ADMIN_NUMBERS_RAW = process.env.ADMIN_NUMBERS || "986613254,972002363";
 // Números completos con sufijo (para casos especiales como dispositivos vinculados)
 const ADMIN_NUMBERS_COMPLETOS = [
-  "260602106781739@lid",
-  "96439782895654@lid"
+  "260602106781739@lid"
 ];
 
 // Crear array con todas las variantes posibles de cada número
@@ -50,10 +49,49 @@ numerosBase.forEach(num => {
   }
 });
 
+// Números específicos para notificaciones de reservas
+// Solo estos números recibirán notificaciones de nuevas solicitudes de reserva
+const RESERVA_ADMIN_NUMBERS_RAW = ["986613254", "260602106781739"];
+const RESERVA_ADMIN_NUMBERS = [];
+
+// Generar todas las variantes para los números de notificaciones de reserva
+RESERVA_ADMIN_NUMBERS_RAW.forEach(num => {
+  // Agregar con @c.us
+  RESERVA_ADMIN_NUMBERS.push(num + '@c.us');
+  RESERVA_ADMIN_NUMBERS.push(num + '@lid');
+  
+  // Si el número tiene código de país (51), agregar también sin él
+  if (num.startsWith('51') && num.length > 2) {
+    const numSinCodigo = num.substring(2);
+    RESERVA_ADMIN_NUMBERS.push(numSinCodigo + '@c.us');
+    RESERVA_ADMIN_NUMBERS.push(numSinCodigo + '@lid');
+  }
+  
+  // Si el número NO tiene código de país, agregar también con código 51
+  if (!num.startsWith('51') && num.length >= 9) {
+    const numConCodigo = '51' + num;
+    RESERVA_ADMIN_NUMBERS.push(numConCodigo + '@c.us');
+    RESERVA_ADMIN_NUMBERS.push(numConCodigo + '@lid');
+  }
+  
+  // Si el número es muy largo (como 260602106781739), también agregar variantes sin prefijo
+  if (num.length > 10) {
+    // Intentar extraer el número base (últimos 9 dígitos)
+    const numBase = num.slice(-9);
+    if (numBase.length === 9) {
+      RESERVA_ADMIN_NUMBERS.push(numBase + '@c.us');
+      RESERVA_ADMIN_NUMBERS.push(numBase + '@lid');
+      RESERVA_ADMIN_NUMBERS.push('51' + numBase + '@c.us');
+      RESERVA_ADMIN_NUMBERS.push('51' + numBase + '@lid');
+    }
+  }
+});
+
 module.exports = {
-  ADMIN_NUMBER: ADMIN_NUMBERS[0] || "51983104105@c.us", // Mantener para compatibilidad
+  ADMIN_NUMBER: ADMIN_NUMBERS[0] || "986613254@c.us", // Mantener para compatibilidad
   ADMIN_NUMBERS: ADMIN_NUMBERS, // Array de todos los administradores (con @c.us y @lid)
   ADMIN_NUMBERS_SIN_SUFIJO: ADMIN_NUMBERS_SIN_SUFIJO, // Array de números sin sufijo para comparaciones
+  RESERVA_ADMIN_NUMBERS: RESERVA_ADMIN_NUMBERS, // Array de administradores que reciben notificaciones de reservas
   HORARIO_ATENCION: process.env.HORARIO_ATENCION || "Lunes a Jueves: 11:00 - 19:00, Viernes: 11:00 - 19:00, Sábado: 10:00 - 16:00, Domingo: Cerrado",
   YAPE_NUMERO: process.env.YAPE_NUMERO || "953348917",
   YAPE_TITULAR: process.env.YAPE_TITULAR || "Esther Ocaña Baron",
