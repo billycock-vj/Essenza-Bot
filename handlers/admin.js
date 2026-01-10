@@ -3,7 +3,7 @@
  */
 
 const { logMessage } = require('../utils/logger');
-const { enviarMensajeSeguro, extraerNumero } = require('./messageHelpers');
+const { enviarMensajeSeguro, extraerNumero, normalizarTelefono } = require('./messageHelpers');
 const { procesarImagenCita } = require('./image');
 const db = require('../services/database');
 const storage = require('../services/storage');
@@ -209,13 +209,12 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
     return false;
   }
 
-  logMessage("INFO", `🔑 ✅ ADMINISTRADOR CONFIRMADO - PROCESANDO COMANDOS`, {
-    userId: userId,
-    numero: extraerNumero(userId),
-    mensaje: text,
-    textLower: textLower,
-    tipoMensaje: message.type
-  });
+  // Log solo en verbose
+  if (config.LOG_LEVEL === 'verbose') {
+    logMessage("INFO", `Admin: ${extraerNumero(userId)}`, {
+      comando: text.substring(0, 30)
+    });
+  }
 
   // Comando: Procesar imagen de cita (solo administradores)
   if (message.type === 'image') {
@@ -314,34 +313,55 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
   // Comando: Resetear sesión de usuario
   if (textoTrimReservas.startsWith("reset ")) {
     try {
-      // Extraer número del comando (acepta +51XXXXXXXXX o 51XXXXXXXXX)
-      const numeroMatch = text.match(/reset\s+(\+?5\d{8,12})/i);
+      // Extraer número del comando (acepta cualquier formato)
+      const numeroMatch = text.match(/reset\s+(\+?\d{9,12})/i);
       if (!numeroMatch) {
         await enviarMensajeSeguro(
           client,
           userId,
-          "❌ Formato incorrecto.\n\nUso: `reset +519XXXXXXXXX` o `reset 519XXXXXXXXX`\n\nEjemplo: `reset +51986613254`"
+          "❌ Formato incorrecto.\n\nUso: `reset [número]`\n\nEjemplo: `reset 972002363` o `reset 51972002363`"
         );
         return true;
       }
       
-      let numeroUsuario = numeroMatch[1].replace(/\D/g, ''); // Solo números
-      if (!numeroUsuario.startsWith('51') && numeroUsuario.length === 9) {
-        numeroUsuario = '51' + numeroUsuario;
+      // Normalizar el número al formato estándar 51XXXXXXXXX
+      const numeroNormalizado = normalizarTelefono(numeroMatch[1]);
+      if (!numeroNormalizado) {
+        await enviarMensajeSeguro(
+          client,
+          userId,
+          "❌ Número de teléfono inválido.\n\nEl número debe tener entre 9 y 12 dígitos."
+        );
+        return true;
       }
-      numeroUsuario = numeroUsuario + '@c.us';
       
-      // Limpiar estado del usuario
+      const numeroUsuario = numeroNormalizado + '@c.us';
+      
+      // Limpiar TODO el estado del usuario
       storage.setUserState(numeroUsuario, null);
       storage.setHumanMode(numeroUsuario, false);
       storage.setBotDesactivado(numeroUsuario, false);
       
-      // Limpiar datos de usuario
-      const userData = storage.getUserData(numeroUsuario) || {};
+      // Limpiar historial de conversación
+      storage.setHistorial(numeroUsuario, []);
+      
+      // Limpiar datos de usuario completamente
+      const userData = {};
       userData.iaDesactivada = false;
       userData.botDesactivadoPorAdmin = false;
       userData.modoReservaDesde = null;
+      userData.saludoEnviado = false;
+      userData.bienvenidaEnviada = false;
+      userData.ultimaInteraccion = null;
       storage.setUserData(numeroUsuario, userData);
+      
+      // También verificar y desbloquear en la base de datos si está bloqueado
+      try {
+        await db.desbloquearUsuario(numeroNormalizado);
+      } catch (error) {
+        // No crítico si falla
+        logMessage("WARNING", "Error al verificar bloqueo en BD (no crítico)", { error: error.message });
+      }
       
       await enviarMensajeSeguro(
         client,
@@ -580,19 +600,25 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
     }
     
     // Si hay número, desactivar para usuario específico
-    const numeroMatch = text.match(/(\d{9,12})/);
+    const numeroMatch = text.match(/(?:desactivar bot|bot off)\s+(\+?\d{9,12})/i) || text.match(/(\d{9,12})/);
 
     if (numeroMatch) {
-      const numeroBuscado = numeroMatch[1];
+      // Normalizar el número al formato estándar 51XXXXXXXXX
+      const numeroBuscado = normalizarTelefono(numeroMatch[1]);
+      if (!numeroBuscado) {
+        await enviarMensajeSeguro(
+          client,
+          userId,
+          "❌ Número de teléfono inválido.\n\nUso: *Desactivar bot [número]*\n\nEjemplo: *Desactivar bot 972002363*"
+        );
+        return true;
+      }
       let usuarioEncontrado = null;
 
-      // Buscar el usuario por número
+      // Buscar el usuario por número (normalizar números para comparación)
       for (const [uid, nombre] of storage.userNames.entries()) {
-        const numeroUsuario = extraerNumero(uid);
-        if (
-          numeroUsuario === numeroBuscado ||
-          numeroUsuario.includes(numeroBuscado)
-        ) {
+        const numeroUsuario = normalizarTelefono(extraerNumero(uid));
+        if (numeroUsuario === numeroBuscado) {
           usuarioEncontrado = uid;
           break;
         }
@@ -715,19 +741,25 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
     }
     
     // Si hay número, activar para usuario específico
-    const numeroMatch = text.match(/(\d{9,12})/);
+    const numeroMatch = text.match(/(?:activar bot|bot on)\s+(\+?\d{9,12})/i) || text.match(/(\d{9,12})/);
 
     if (numeroMatch) {
-      const numeroBuscado = numeroMatch[1];
+      // Normalizar el número al formato estándar 51XXXXXXXXX
+      const numeroBuscado = normalizarTelefono(numeroMatch[1]);
+      if (!numeroBuscado) {
+        await enviarMensajeSeguro(
+          client,
+          userId,
+          "❌ Número de teléfono inválido.\n\nUso: *Activar bot [número]*\n\nEjemplo: *Activar bot 972002363*"
+        );
+        return true;
+      }
       let usuarioEncontrado = null;
 
-      // Buscar el usuario por número
+      // Buscar el usuario por número (normalizar números para comparación)
       for (const [uid, nombre] of storage.userNames.entries()) {
-        const numeroUsuario = extraerNumero(uid);
-        if (
-          numeroUsuario === numeroBuscado ||
-          numeroUsuario.includes(numeroBuscado)
-        ) {
+        const numeroUsuario = normalizarTelefono(extraerNumero(uid));
+        if (numeroUsuario === numeroBuscado) {
           usuarioEncontrado = uid;
           break;
         }
@@ -1051,15 +1083,19 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
 
   // Comando: ver cliente [telefono]
   if (textLower.startsWith("ver cliente ")) {
-    const telefonoMatch = text.match(/ver cliente (\+?5\d{8,12})/i);
+    const telefonoMatch = text.match(/ver cliente (\+?\d{9,12})/i);
     if (telefonoMatch) {
-      let telefono = telefonoMatch[1].replace(/\D/g, '');
-      if (!telefono.startsWith('51') && telefono.length === 9) {
-        telefono = '51' + telefono;
+      // Normalizar el número al formato estándar 51XXXXXXXXX
+      const telefono = normalizarTelefono(telefonoMatch[1]);
+      if (!telefono) {
+        await enviarMensajeSeguro(client, userId, `❌ Número de teléfono inválido.\n\nUso: *ver cliente [número]*\n\nEjemplo: *ver cliente 972002363*`);
+        return true;
       }
       
       try {
+        // Buscar con el formato normalizado (51XXXXXXXXX)
         const historial = await db.obtenerHistorialCliente(telefono);
+        
         if (historial && historial.cliente) {
           let mensaje = `👤 *CLIENTE*\n\n`;
           mensaje += `📱 *Teléfono:* ${telefono}\n`;
@@ -1071,37 +1107,48 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
             mensaje += `📄 *Notas:* ${historial.cliente.notas}\n`;
           }
           
-          if (historial.reservas.length > 0) {
+          if (historial.reservas && historial.reservas.length > 0) {
             mensaje += `\n📋 *Historial de Reservas:*\n\n`;
             historial.reservas.slice(0, 10).forEach((r, idx) => {
               const estadoEmoji = r.estado === 'confirmada' ? '✅' : 
                                  r.estado === 'cancelada' ? '❌' : '⏳';
-              mensaje += `${idx + 1}. ${estadoEmoji} ${r.fechaHora.toLocaleString('es-PE')} - ${r.servicio}\n`;
+              const fechaHora = r.fechaHora instanceof Date 
+                ? r.fechaHora.toLocaleString('es-PE')
+                : new Date(r.fechaHora).toLocaleString('es-PE');
+              mensaje += `${idx + 1}. ${estadoEmoji} ${fechaHora} - ${r.servicio}\n`;
             });
             if (historial.reservas.length > 10) {
               mensaje += `\n... y ${historial.reservas.length - 10} más`;
             }
+          } else {
+            mensaje += `\n📋 *Historial de Reservas:*\n\nNo hay reservas registradas.`;
           }
           
           await enviarMensajeSeguro(client, userId, mensaje);
         } else {
-          await enviarMensajeSeguro(client, userId, `❌ No se encontró información del cliente ${telefono}`);
+          await enviarMensajeSeguro(client, userId, `❌ No se encontró información del cliente ${telefono}\n\nVerifica que el número sea correcto y que el cliente haya interactuado con el bot.`);
         }
       } catch (error) {
-        logMessage("ERROR", "Error al obtener historial cliente", { error: error.message });
+        logMessage("ERROR", "Error al obtener historial cliente", { error: error.message, telefono });
         await enviarMensajeSeguro(client, userId, `❌ Error al obtener el historial: ${error.message}`);
       }
+      return true;
+    } else {
+      // Si no coincide el regex, mostrar ayuda
+      await enviarMensajeSeguro(client, userId, `❌ Formato incorrecto.\n\nUso: *ver cliente [número]*\n\nEjemplo: *ver cliente 972002363*`);
       return true;
     }
   }
 
   // Comando: bloquear cliente [telefono]
   if (textLower.startsWith("bloquear cliente ")) {
-    const telefonoMatch = text.match(/bloquear cliente (\+?5\d{8,12})/i);
+    const telefonoMatch = text.match(/bloquear cliente (\+?\d{9,12})/i);
     if (telefonoMatch) {
-      let telefono = telefonoMatch[1].replace(/\D/g, '');
-      if (!telefono.startsWith('51') && telefono.length === 9) {
-        telefono = '51' + telefono;
+      // Normalizar el número al formato estándar 51XXXXXXXXX
+      const telefono = normalizarTelefono(telefonoMatch[1]);
+      if (!telefono) {
+        await enviarMensajeSeguro(client, userId, `❌ Número de teléfono inválido.\n\nUso: *bloquear cliente [número]*\n\nEjemplo: *bloquear cliente 972002363*`);
+        return true;
       }
       
       try {
@@ -1113,26 +1160,33 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
           `📱 Teléfono: ${telefono}\n\n` +
           `El bot dejará de responder a este número.`
         );
-        logMessage("INFO", "Cliente bloqueado", { telefono, adminId: extraerNumero(userId) });
+        logMessage("SUCCESS", "Cliente bloqueado", { telefono, adminId: extraerNumero(userId) });
       } catch (error) {
         logMessage("ERROR", "Error al bloquear cliente", { error: error.message });
         await enviarMensajeSeguro(client, userId, `❌ Error al bloquear: ${error.message}`);
       }
+      return true;
+    } else {
+      await enviarMensajeSeguro(client, userId, `❌ Formato incorrecto.\n\nUso: *bloquear cliente [número]*\n\nEjemplo: *bloquear cliente 972002363*`);
       return true;
     }
   }
 
   // Comando: desbloquear cliente [telefono]
   if (textLower.startsWith("desbloquear cliente ")) {
-    const telefonoMatch = text.match(/desbloquear cliente (\+?5\d{8,12})/i);
+    const telefonoMatch = text.match(/desbloquear cliente (\+?\d{9,12})/i);
     if (telefonoMatch) {
-      let telefono = telefonoMatch[1].replace(/\D/g, '');
-      if (!telefono.startsWith('51') && telefono.length === 9) {
-        telefono = '51' + telefono;
+      // Normalizar el número al formato estándar 51XXXXXXXXX
+      const telefono = normalizarTelefono(telefonoMatch[1]);
+      if (!telefono) {
+        await enviarMensajeSeguro(client, userId, `❌ Número de teléfono inválido.\n\nUso: *desbloquear cliente [número]*\n\nEjemplo: *desbloquear cliente 972002363*`);
+        return true;
       }
       
       try {
+        // Desbloquear con formato normalizado
         const exito = await db.desbloquearUsuario(telefono);
+        
         if (exito) {
           await enviarMensajeSeguro(
             client,
@@ -1141,7 +1195,7 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
             `📱 Teléfono: ${telefono}\n\n` +
             `El bot volverá a responder a este número.`
           );
-          logMessage("INFO", "Cliente desbloqueado", { telefono, adminId: extraerNumero(userId) });
+          logMessage("SUCCESS", "Cliente desbloqueado", { telefono, adminId: extraerNumero(userId) });
         } else {
           await enviarMensajeSeguro(client, userId, `❌ El cliente ${telefono} no estaba bloqueado`);
         }
@@ -1149,6 +1203,9 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
         logMessage("ERROR", "Error al desbloquear cliente", { error: error.message });
         await enviarMensajeSeguro(client, userId, `❌ Error al desbloquear: ${error.message}`);
       }
+      return true;
+    } else {
+      await enviarMensajeSeguro(client, userId, `❌ Formato incorrecto.\n\nUso: *desbloquear cliente [número]*\n\nEjemplo: *desbloquear cliente 972002363*`);
       return true;
     }
   }

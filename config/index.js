@@ -4,11 +4,64 @@ require("dotenv").config();
 // Lista de números de administradores (formato: número sin @c.us)
 // Acepta números con o sin código de país
 // También acepta números completos con @lid o @c.us
-const ADMIN_NUMBERS_RAW = process.env.ADMIN_NUMBERS || "986613254,972002363";
+const ADMIN_NUMBERS_RAW = process.env.ADMIN_NUMBERS || "986613254";
 // Números completos con sufijo (para casos especiales como dispositivos vinculados)
 const ADMIN_NUMBERS_COMPLETOS = [
   "260602106781739@lid"
 ];
+
+// Números únicos de prueba (para desarrollo/testing)
+// Solo estos números y los administradores pueden interactuar con el bot
+const TEST_NUMBERS_RAW = process.env.TEST_NUMBERS || "983104105,96439782895654@lid";
+const TEST_NUMBERS_BASE = TEST_NUMBERS_RAW.split(',').map(num => num.trim());
+const TEST_NUMBERS = [];
+
+// Generar todas las variantes para los números de prueba (igual que con administradores)
+TEST_NUMBERS_BASE.forEach(num => {
+  // Si ya tiene sufijo (@lid o @c.us), agregarlo directamente
+  if (num.includes('@')) {
+    TEST_NUMBERS.push(num);
+    // También agregar sin sufijo para comparaciones
+    const numSinSufijo = num.replace(/@(c\.us|lid)$/, '');
+    TEST_NUMBERS.push(numSinSufijo);
+    
+    // Si tiene prefijo 51, también agregar sin él
+    if (numSinSufijo.startsWith('51') && numSinSufijo.length > 2) {
+      TEST_NUMBERS.push(numSinSufijo.substring(2));
+      TEST_NUMBERS.push(numSinSufijo.substring(2) + '@c.us');
+      TEST_NUMBERS.push(numSinSufijo.substring(2) + '@lid');
+    }
+    
+    // Si NO tiene prefijo 51, agregar con él
+    if (!numSinSufijo.startsWith('51') && numSinSufijo.length >= 9) {
+      const numConPrefijo = '51' + numSinSufijo;
+      TEST_NUMBERS.push(numConPrefijo);
+      TEST_NUMBERS.push(numConPrefijo + '@c.us');
+      TEST_NUMBERS.push(numConPrefijo + '@lid');
+    }
+  } else {
+    // Si no tiene sufijo, agregar todas las variantes
+    TEST_NUMBERS.push(num);
+    TEST_NUMBERS.push(num + '@c.us');
+    TEST_NUMBERS.push(num + '@lid');
+    
+    // Si tiene prefijo 51, también agregar sin él
+    if (num.startsWith('51') && num.length > 2) {
+      const numSinPrefijo = num.substring(2);
+      TEST_NUMBERS.push(numSinPrefijo);
+      TEST_NUMBERS.push(numSinPrefijo + '@c.us');
+      TEST_NUMBERS.push(numSinPrefijo + '@lid');
+    }
+    
+    // Si NO tiene prefijo 51, agregar con él
+    if (!num.startsWith('51') && num.length >= 9) {
+      const numConPrefijo = '51' + num;
+      TEST_NUMBERS.push(numConPrefijo);
+      TEST_NUMBERS.push(numConPrefijo + '@c.us');
+      TEST_NUMBERS.push(numConPrefijo + '@lid');
+    }
+  }
+});
 
 // Crear array con todas las variantes posibles de cada número
 const numerosBase = ADMIN_NUMBERS_RAW.split(',').map(num => num.trim());
@@ -92,11 +145,12 @@ module.exports = {
   ADMIN_NUMBERS: ADMIN_NUMBERS, // Array de todos los administradores (con @c.us y @lid)
   ADMIN_NUMBERS_SIN_SUFIJO: ADMIN_NUMBERS_SIN_SUFIJO, // Array de números sin sufijo para comparaciones
   RESERVA_ADMIN_NUMBERS: RESERVA_ADMIN_NUMBERS, // Array de administradores que reciben notificaciones de reservas
-  HORARIO_ATENCION: process.env.HORARIO_ATENCION || "Lunes a Jueves: 11:00 - 19:00, Viernes: 11:00 - 19:00, Sábado: 10:00 - 16:00, Domingo: Cerrado",
+  TEST_NUMBERS: TEST_NUMBERS, // Array de números únicos de prueba (solo estos pueden interactuar con el bot)
+  HORARIO_ATENCION: process.env.HORARIO_ATENCION || "Lunes a Sábado: 11:00 - 19:00, Domingo: Cerrado",
   YAPE_NUMERO: process.env.YAPE_NUMERO || "953348917",
   YAPE_TITULAR: process.env.YAPE_TITULAR || "Esther Ocaña Baron",
   BANCO_CUENTA: process.env.BANCO_CUENTA || "19194566778095",
-  UBICACION: process.env.UBICACION || "Jiron Ricardo Palma 603, Puente Piedra, Lima, Perú",
+  UBICACION: process.env.UBICACION || "Jirón Ricardo Palma 603, Puente Piedra, Lima, Perú",
   MAPS_LINK: process.env.MAPS_LINK || "https://maps.app.goo.gl/Fu2Dd9tiiiwptV5m6",
   DEPOSITO_RESERVA: process.env.DEPOSITO_RESERVA || "20",
   LOG_LEVEL: process.env.LOG_LEVEL || 'normal',

@@ -56,13 +56,15 @@ async function consultarIA(mensajeUsuario, contextoUsuario = {}) {
   // Verificar límite de interacciones IA
   const userId = contextoUsuario.userId;
   if (userId) {
-    const puedeUsar = await db.puedeUsarIA(userId);
-    if (!puedeUsar.puede) {
-      return `⚠️ Has alcanzado el límite de ${puedeUsar.limite} respuestas con IA por hoy. Por favor, contacta con un asesor escribiendo "asesor".`;
+    try {
+      const puedeUsar = await db.puedeUsarIA(userId);
+      if (!puedeUsar.puede) {
+        return `⚠️ Has alcanzado el límite de ${puedeUsar.limite} respuestas con IA por hoy. Por favor, contacta con un asesor escribiendo "asesor".`;
+      }
+    } catch (error) {
+      // Si hay error al verificar límite, continuar (no bloquear por error técnico)
+      logMessage("WARNING", "Error al verificar límite de IA (continuando)", { error: error.message });
     }
-    
-    // Registrar interacción
-    await db.registrarInteraccionIA(userId);
   }
 
   // Usar cola de peticiones para rate limiting (1 petición por segundo)
@@ -219,6 +221,16 @@ Meta final del bot: resolver dudas, recomendar, cerrar reserva.`;
       if (!respuesta || respuesta.length === 0) {
         logMessage("WARNING", "Respuesta vacía de OpenAI");
         return null;
+      }
+
+      // Registrar interacción DESPUÉS de obtener respuesta exitosa
+      if (userId) {
+        try {
+          await db.registrarInteraccionIA(userId);
+        } catch (error) {
+          // No crítico si falla el registro
+          logMessage("WARNING", "Error al registrar interacción IA (no crítico)", { error: error.message });
+        }
       }
 
       return respuesta;

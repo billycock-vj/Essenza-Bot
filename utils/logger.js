@@ -98,22 +98,37 @@ function logMessage(type, message, data = null) {
     (LOG_LEVEL === 'silent' && type === 'ERROR'); // Silent: solo errores críticos
 
   if (mostrarEnConsola) {
-    // Formato simplificado para consola
+    // Formato simplificado y limpio para consola
     const iconos = {
-      INFO: 'ℹ️',
-      SUCCESS: '✅',
-      WARNING: '⚠️',
-      ERROR: '❌',
+      INFO: '',
+      SUCCESS: '✓',
+      WARNING: '⚠',
+      ERROR: '✗',
     };
     const icono = iconos[type] || '';
     
-    // Mensaje más corto y limpio
-    const mensajeCorto = message.length > 60 ? message.substring(0, 57) + '...' : message;
-    console.log(`${color}${icono} [${type}]${colors.RESET} ${mensajeCorto}`);
+    // Mensaje más corto y limpio (máximo 50 caracteres)
+    const mensajeCorto = message.length > 50 ? message.substring(0, 47) + '...' : message;
     
-    // Solo mostrar datos en modo verbose o si es un error
-    if (dataSanitizado && (LOG_LEVEL === 'verbose' || type === 'ERROR')) {
-      console.log(`   └─`, dataSanitizado);
+    // Formato compacto: solo icono y mensaje (sin [TYPE])
+    if (type === 'ERROR') {
+      console.log(`${color}${icono} ${mensajeCorto}${colors.RESET}`);
+      // Para errores, mostrar datos si existen
+      if (dataSanitizado) {
+        const datosRelevantes = Object.keys(dataSanitizado).length > 0 
+          ? JSON.stringify(dataSanitizado).substring(0, 100)
+          : '';
+        if (datosRelevantes) {
+          console.log(`   ${datosRelevantes}`);
+        }
+      }
+    } else if (type === 'WARNING') {
+      console.log(`${color}${icono} ${mensajeCorto}${colors.RESET}`);
+    } else if (type === 'SUCCESS') {
+      console.log(`${color}${icono} ${mensajeCorto}${colors.RESET}`);
+    } else {
+      // INFO solo en verbose
+      console.log(`${mensajeCorto}`);
     }
   }
 }

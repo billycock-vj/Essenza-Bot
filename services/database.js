@@ -139,11 +139,13 @@ async function inicializarDB() {
                     return;
                   }
                   
-                  // Tabla de clientes
+                  // Tabla de clientes (actualizada con session_id y phone)
                   db.run(`
                     CREATE TABLE IF NOT EXISTS clientes (
                       id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      telefono TEXT NOT NULL UNIQUE,
+                      session_id TEXT NOT NULL UNIQUE,
+                      phone TEXT,
+                      country TEXT,
                       nombre TEXT,
                       fecha_creacion TEXT NOT NULL,
                       notas TEXT,
@@ -1212,13 +1214,40 @@ async function obtenerServicioPorId(id) {
 async function bloquearUsuario(telefono, motivo = null, bloqueadoPor = null) {
   const db = await abrirDB();
   return new Promise((resolve, reject) => {
+    // Normalizar el teléfono antes de guardar
+    let telefonoNormalizado = telefono.replace(/\D/g, '');
+    // Si tiene 9 dígitos y no empieza con 51, agregar prefijo
+    if (telefonoNormalizado.length === 9 && !telefonoNormalizado.startsWith('51')) {
+      telefonoNormalizado = '51' + telefonoNormalizado;
+    }
+    
+    // Primero desactivar cualquier bloqueo existente para este teléfono (con ambos formatos)
+    const formatosBusqueda = [telefonoNormalizado];
+    if (telefonoNormalizado.length === 11 && telefonoNormalizado.startsWith('51')) {
+      formatosBusqueda.push(telefonoNormalizado.substring(2));
+    }
+    
+    const condiciones = formatosBusqueda.map(() => 'telefono = ?').join(' OR ');
     db.run(
-      'INSERT OR REPLACE INTO usuarios_bloqueados (telefono, motivo, fecha_bloqueo, bloqueado_por, activo) VALUES (?, ?, ?, ?, 1)',
-      [telefono, motivo, new Date().toISOString(), bloqueadoPor],
-      function(err) {
-        db.close();
-        if (err) reject(err);
-        else resolve(this.lastID);
+      `UPDATE usuarios_bloqueados SET activo = 0 WHERE ${condiciones}`,
+      formatosBusqueda,
+      (err) => {
+        if (err) {
+          db.close();
+          reject(err);
+          return;
+        }
+        
+        // Ahora insertar el nuevo bloqueo
+        db.run(
+          'INSERT INTO usuarios_bloqueados (telefono, motivo, fecha_bloqueo, bloqueado_por, activo) VALUES (?, ?, ?, ?, 1)',
+          [telefonoNormalizado, motivo, new Date().toISOString(), bloqueadoPor],
+          function(err2) {
+            db.close();
+            if (err2) reject(err2);
+            else resolve(this.lastID);
+          }
+        );
       }
     );
   });
@@ -1232,9 +1261,23 @@ async function bloquearUsuario(telefono, motivo = null, bloqueadoPor = null) {
 async function desbloquearUsuario(telefono) {
   const db = await abrirDB();
   return new Promise((resolve, reject) => {
+    // Normalizar el teléfono
+    let telefonoNormalizado = telefono.replace(/\D/g, '');
+    if (telefonoNormalizado.length === 9 && !telefonoNormalizado.startsWith('51')) {
+      telefonoNormalizado = '51' + telefonoNormalizado;
+    }
+    
+    // Preparar formatos de búsqueda
+    const formatosBusqueda = [telefonoNormalizado];
+    if (telefonoNormalizado.length === 11 && telefonoNormalizado.startsWith('51')) {
+      formatosBusqueda.push(telefonoNormalizado.substring(2)); // Sin prefijo
+    }
+    
+    // Desbloquear con formato normalizado y también sin prefijo
+    const condiciones = formatosBusqueda.map(() => 'telefono = ?').join(' OR ');
     db.run(
-      'UPDATE usuarios_bloqueados SET activo = 0 WHERE telefono = ?',
-      [telefono],
+      `UPDATE usuarios_bloqueados SET activo = 0 WHERE ${condiciones}`,
+      formatosBusqueda,
       function(err) {
         db.close();
         if (err) reject(err);
@@ -1252,13 +1295,40 @@ async function desbloquearUsuario(telefono) {
 async function estaUsuarioBloqueado(telefono) {
   const db = await abrirDB();
   return new Promise((resolve, reject) => {
+    // Normalizar el teléfono antes de buscar
+    let telefonoNormalizado = telefono.replace(/\D/g, '');
+    // Si tiene 9 dígitos y no empieza con 51, agregar prefijo
+    if (telefonoNormalizado.length === 9 && !telefonoNormalizado.startsWith('51')) {
+      telefonoNormalizado = '51' + telefonoNormalizado;
+    }
+    
+    // Buscar con el formato normalizado
     db.get(
       'SELECT COUNT(*) as count FROM usuarios_bloqueados WHERE telefono = ? AND activo = 1',
-      [telefono],
+      [telefonoNormalizado],
       (err, row) => {
-        db.close();
-        if (err) reject(err);
-        else resolve(row.count > 0);
+        if (err) {
+          db.close();
+          reject(err);
+          return;
+        }
+        
+        // Si no se encuentra con el formato normalizado, intentar con variaciones
+        if (row.count === 0 && telefonoNormalizado.length === 11 && telefonoNormalizado.startsWith('51')) {
+          const telefonoSinPrefijo = telefonoNormalizado.substring(2);
+          db.get(
+            'SELECT COUNT(*) as count FROM usuarios_bloqueados WHERE telefono = ? AND activo = 1',
+            [telefonoSinPrefijo],
+            (err2, row2) => {
+              db.close();
+              if (err2) reject(err2);
+              else resolve(row2.count > 0);
+            }
+          );
+        } else {
+          db.close();
+          resolve(row.count > 0);
+        }
       }
     );
   });
@@ -1269,15 +1339,18 @@ async function estaUsuarioBloqueado(telefono) {
 // ============================================
 
 /**
- * Obtiene o crea un cliente
- * @param {string} telefono - Número de teléfono
+ * Obtiene o crea un cliente en la base de datos
+ * @param {string} sessionId - Session ID (userId completo con @c.us o @lid)
+ * @param {string} phone - Número de teléfono real (opcional, puede ser null)
+ * @param {string} country - Código de país (opcional, ej: 'PE')
  * @param {string} nombre - Nombre del cliente (opcional)
  * @returns {Promise<Object>}
  */
-async function obtenerOCrearCliente(telefono, nombre = null) {
+async function obtenerOCrearCliente(sessionId, phone = null, country = null, nombre = null) {
   const db = await abrirDB();
   return new Promise((resolve, reject) => {
-    db.get('SELECT * FROM clientes WHERE telefono = ?', [telefono], (err, row) => {
+    // Buscar por session_id primero
+    db.get('SELECT * FROM clientes WHERE session_id = ?', [sessionId], (err, row) => {
       if (err) {
         db.close();
         reject(err);
@@ -1285,41 +1358,141 @@ async function obtenerOCrearCliente(telefono, nombre = null) {
       }
       
       if (row) {
-        db.close();
-        resolve(row);
+        // Si existe pero no tiene phone y ahora lo tenemos, actualizar
+        if (!row.phone && phone) {
+          db.run(
+            'UPDATE clientes SET phone = ?, country = ? WHERE session_id = ?',
+            [phone, country, sessionId],
+            (err) => {
+              if (!err) {
+                db.get('SELECT * FROM clientes WHERE session_id = ?', [sessionId], (err, updatedRow) => {
+                  db.close();
+                  if (err) reject(err);
+                  else resolve(updatedRow);
+                });
+              } else {
+                db.close();
+                resolve(row); // Retornar el existente aunque no se actualizó
+              }
+            }
+          );
+        } else {
+          db.close();
+          resolve(row);
+        }
       } else {
-        // Crear nuevo cliente
-        db.run(
-          'INSERT INTO clientes (telefono, nombre, fecha_creacion) VALUES (?, ?, ?)',
-          [telefono, nombre, new Date().toISOString()],
-          function(err) {
+        // Si no existe, crear nuevo
+        // Si tenemos phone, también buscar por phone para evitar duplicados
+        if (phone) {
+          db.get('SELECT * FROM clientes WHERE phone = ?', [phone], (err, rowByPhone) => {
             if (err) {
               db.close();
               reject(err);
               return;
             }
-            db.get('SELECT * FROM clientes WHERE id = ?', [this.lastID], (err, newRow) => {
-              db.close();
-              if (err) reject(err);
-              else resolve(newRow);
-            });
-          }
-        );
+            
+            if (rowByPhone) {
+              // Existe por phone, actualizar session_id
+              db.run(
+                'UPDATE clientes SET session_id = ? WHERE phone = ?',
+                [sessionId, phone],
+                (err) => {
+                  if (!err) {
+                    db.get('SELECT * FROM clientes WHERE session_id = ?', [sessionId], (err, updatedRow) => {
+                      db.close();
+                      if (err) reject(err);
+                      else resolve(updatedRow);
+                    });
+                  } else {
+                    db.close();
+                    resolve(rowByPhone);
+                  }
+                }
+              );
+            } else {
+              // Crear nuevo cliente
+              db.run(
+                'INSERT INTO clientes (session_id, phone, country, nombre, fecha_creacion) VALUES (?, ?, ?, ?, ?)',
+                [sessionId, phone, country, nombre, new Date().toISOString()],
+                function(err) {
+                  if (err) {
+                    db.close();
+                    reject(err);
+                    return;
+                  }
+                  db.get('SELECT * FROM clientes WHERE id = ?', [this.lastID], (err, newRow) => {
+                    db.close();
+                    if (err) reject(err);
+                    else resolve(newRow);
+                  });
+                }
+              );
+            }
+          });
+        } else {
+          // Crear sin phone (solo session_id)
+          db.run(
+            'INSERT INTO clientes (session_id, phone, country, nombre, fecha_creacion) VALUES (?, ?, ?, ?, ?)',
+            [sessionId, null, country, nombre, new Date().toISOString()],
+            function(err) {
+              if (err) {
+                db.close();
+                reject(err);
+                return;
+              }
+              db.get('SELECT * FROM clientes WHERE id = ?', [this.lastID], (err, newRow) => {
+                db.close();
+                if (err) reject(err);
+                else resolve(newRow);
+              });
+            }
+          );
+        }
       }
     });
   });
 }
 
 /**
+ * Obtiene un cliente por número de teléfono (phone)
+ * @param {string} phone - Número de teléfono
+ * @returns {Promise<Object|null>}
+ */
+async function obtenerClientePorPhone(phone) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.get('SELECT * FROM clientes WHERE phone = ?', [phone], (err, row) => {
+      db.close();
+      if (err) reject(err);
+      else resolve(row || null);
+    });
+  });
+}
+
+/**
  * Obtiene historial completo de un cliente
- * @param {string} telefono - Número de teléfono
+ * @param {string} telefono - Número de teléfono o session_id
  * @returns {Promise<Object>}
  */
 async function obtenerHistorialCliente(telefono) {
   const db = await abrirDB();
   return new Promise((resolve, reject) => {
-    // Obtener datos del cliente
-    db.get('SELECT * FROM clientes WHERE telefono = ?', [telefono], (err, cliente) => {
+    // Normalizar el teléfono antes de buscar
+    let telefonoNormalizado = telefono.replace(/\D/g, '');
+    // Si tiene 9 dígitos y no empieza con 51, agregar prefijo
+    if (telefonoNormalizado.length === 9 && !telefonoNormalizado.startsWith('51')) {
+      telefonoNormalizado = '51' + telefonoNormalizado;
+    }
+    
+    // Preparar formatos de búsqueda para cliente
+    const formatosCliente = [telefonoNormalizado];
+    if (telefonoNormalizado.length === 11 && telefonoNormalizado.startsWith('51')) {
+      formatosCliente.push(telefonoNormalizado.substring(2)); // Sin prefijo
+    }
+    
+    // Obtener datos del cliente - buscar con formato normalizado y también sin prefijo
+    const condicionesCliente = formatosCliente.map(() => 'telefono = ?').join(' OR ');
+    db.get(`SELECT * FROM clientes WHERE ${condicionesCliente}`, formatosCliente, (err, cliente) => {
       if (err) {
         db.close();
         reject(err);
@@ -1332,10 +1505,23 @@ async function obtenerHistorialCliente(telefono) {
         return;
       }
       
-      // Obtener todas las reservas del cliente
+      // Obtener todas las reservas del cliente - buscar con diferentes formatos
+      const formatosBusqueda = [
+        `%${telefonoNormalizado}%`,
+        `%${telefonoNormalizado.substring(2)}%` // Sin prefijo
+      ];
+      if (telefonoNormalizado.length === 11 && telefonoNormalizado.startsWith('51')) {
+        formatosBusqueda.push(`%${telefonoNormalizado.substring(2)}@c.us%`);
+        formatosBusqueda.push(`%${telefonoNormalizado.substring(2)}@lid%`);
+      }
+      formatosBusqueda.push(`%${telefonoNormalizado}@c.us%`);
+      formatosBusqueda.push(`%${telefonoNormalizado}@lid%`);
+      
+      // Construir query con múltiples condiciones LIKE
+      const condiciones = formatosBusqueda.map(() => 'userId LIKE ?').join(' OR ');
       db.all(
-        'SELECT * FROM reservas WHERE userId LIKE ? ORDER BY fechaHora DESC',
-        [`%${telefono}%`],
+        `SELECT * FROM reservas WHERE ${condiciones} ORDER BY fechaHora DESC`,
+        formatosBusqueda,
         (err, reservas) => {
           db.close();
           if (err) {
@@ -1566,6 +1752,53 @@ async function migrarBaseDatos() {
       db.run('ALTER TABLE reservas ADD COLUMN origen TEXT DEFAULT "bot"', () => {});
       db.run('ALTER TABLE reservas ADD COLUMN notas TEXT', () => {});
       
+      // Migrar tabla clientes: agregar session_id, phone, country
+      // Primero verificar si existe la columna telefono (versión antigua)
+      db.get("PRAGMA table_info(clientes)", (err, rows) => {
+        if (err) {
+          console.log("⚠️  Error al verificar estructura de clientes:", err.message);
+        } else {
+          const columnas = rows.map(r => r.name);
+          const tieneTelefono = columnas.includes('telefono');
+          const tieneSessionId = columnas.includes('session_id');
+          const tienePhone = columnas.includes('phone');
+          
+          // Si tiene telefono pero no session_id, migrar datos
+          if (tieneTelefono && !tieneSessionId) {
+            // Agregar nuevas columnas
+            db.run('ALTER TABLE clientes ADD COLUMN session_id TEXT', () => {});
+            db.run('ALTER TABLE clientes ADD COLUMN phone TEXT', () => {});
+            db.run('ALTER TABLE clientes ADD COLUMN country TEXT', () => {});
+            
+            // Migrar datos: usar telefono como session_id temporal (si no es @lid)
+            // y phone como telefono normalizado
+            db.all('SELECT * FROM clientes', (err, clientes) => {
+              if (!err && clientes) {
+                clientes.forEach(cliente => {
+                  const telefono = cliente.telefono;
+                  // Si el telefono parece ser un número real (solo dígitos), usarlo como phone
+                  // Si tiene @lid o @c.us, usarlo como session_id
+                  if (telefono && /^\d+$/.test(telefono)) {
+                    // Es un número real, usarlo como phone
+                    db.run('UPDATE clientes SET phone = ?, session_id = ? WHERE id = ?', 
+                      [telefono, telefono + '@c.us', cliente.id], () => {});
+                  } else if (telefono && (telefono.includes('@lid') || telefono.includes('@c.us'))) {
+                    // Ya tiene formato de session_id
+                    db.run('UPDATE clientes SET session_id = ?, phone = NULL WHERE id = ?', 
+                      [telefono, cliente.id], () => {});
+                  }
+                });
+              }
+            });
+          } else if (!tieneSessionId) {
+            // Agregar columnas si no existen
+            db.run('ALTER TABLE clientes ADD COLUMN session_id TEXT', () => {});
+            db.run('ALTER TABLE clientes ADD COLUMN phone TEXT', () => {});
+            db.run('ALTER TABLE clientes ADD COLUMN country TEXT', () => {});
+          }
+        }
+      });
+      
       // Crear tabla servicios
       db.run(`
         CREATE TABLE IF NOT EXISTS servicios (
@@ -1693,6 +1926,7 @@ module.exports = {
   desbloquearUsuario,
   estaUsuarioBloqueado,
   obtenerOCrearCliente,
+  obtenerClientePorPhone,
   obtenerHistorialCliente,
   actualizarNotasCliente,
   generarReporteDiario,

@@ -260,7 +260,7 @@ const autoConfirmationHandler = require('./handlers/autoConfirmation');
 const imageHandler = require('./handlers/image');
 const aiHandler = require('./handlers/ai');
 const remindersHandler = require('./handlers/reminders');
-const { enviarMensajeSeguro, extraerNumero, inicializarUsuario, extractName } = require('./handlers/messageHelpers');
+const { enviarMensajeSeguro, extraerNumero, extraerNumeroReal, extraerSessionId, inicializarUsuario, extractName, normalizarTelefono } = require('./handlers/messageHelpers');
 const { getSaludoPorHora, getRespuestaVariada, detectSaludo } = require('./utils/responses');
 
 // ============================================
@@ -1570,6 +1570,7 @@ async function start(client) {
       if (!message.body && !message.caption) return;
 
       // 3. Filtrar estados de WhatsApp - Múltiples verificaciones
+      // Ignorar silenciosamente sin generar logs (son mensajes normales del sistema)
       if (
         message.isStatus === true ||
         message.type === "status" ||
@@ -1577,22 +1578,17 @@ async function start(client) {
         (message.chatId && message.chatId.includes("status")) ||
         (message.from && message.from.includes("status"))
       ) {
-        if (LOG_LEVEL === 'verbose') {
-        logMessage("INFO", "Mensaje de estado ignorado", {
-          type: message.type,
-          from: message.from,
-          chatId: message.chatId,
-        });
-        }
         return;
       }
 
       // 4. Filtrar mensajes de grupos
+      // Ignorar silenciosamente sin generar logs
       if (message.isGroupMsg === true || message.isGroup === true) {
         return;
       }
 
       // 5. Filtrar mensajes de broadcast
+      // Ignorar silenciosamente sin generar logs
       if (message.isBroadcast === true) {
         return;
       }
@@ -1612,8 +1608,19 @@ async function start(client) {
       }
 
       // 7. Validar que el remitente sea un número válido (no estados)
+      // Filtrar temprano mensajes de status, broadcast, grupos sin generar logs
       if (!message.from || typeof message.from !== "string") {
         return;
+      }
+
+      // Filtrar status, broadcast y grupos antes de cualquier log
+      if (
+        message.from.includes("status") ||
+        message.from.includes("broadcast") ||
+        message.from.includes("@g.us") ||
+        message.from === "status@broadcast"
+      ) {
+        return; // Ignorar silenciosamente - no generar logs
       }
 
       // 8. Validación CRÍTICA: Solo procesar chats individuales (@c.us o @lid)
@@ -1624,13 +1631,6 @@ async function start(client) {
         (message.from.endsWith("@c.us") || message.from.endsWith("@lid"));
 
       if (!esChatIndividual) {
-        if (LOG_LEVEL === 'verbose') {
-        logMessage("INFO", "Mensaje ignorado - no es chat individual válido", {
-          from: message.from,
-          type: message.type,
-          isStatus: message.isStatus,
-        });
-        }
         return; // Solo chats individuales (@c.us o @lid), NO grupos (@g.us) ni estados
       }
 
@@ -1644,13 +1644,7 @@ async function start(client) {
         "ptt",
       ];
       if (message.type && !tiposPermitidos.includes(message.type)) {
-        if (LOG_LEVEL === 'verbose') {
-        logMessage("INFO", "Mensaje ignorado - tipo no permitido", {
-          type: message.type,
-          from: message.from,
-        });
-        }
-        return;
+        return; // Ignorar silenciosamente tipos no permitidos
       }
 
       // 10. Validación final del userId
@@ -1663,11 +1657,90 @@ async function start(client) {
         (userId.includes("@c.us") || userId.includes("@lid"));
 
       if (!esUserIdValido) {
-        logMessage("WARNING", "Mensaje ignorado - userId inválido", {
-          userId: userId,
-          type: message.type,
-        });
+        // Solo loggear si no es un status/broadcast (ya filtrado arriba)
+        if (!userId.includes("status") && !userId.includes("broadcast")) {
+          logMessage("WARNING", "Mensaje ignorado - userId inválido", {
+            userId: userId,
+            type: message.type,
+          });
+        }
         return;
+      }
+
+      // 11. Verificar si el usuario es administrador o número de prueba
+      // Solo estos usuarios pueden interactuar con el bot
+      const esAdminVerificacion = esAdministrador(userId);
+      
+      // Extraer número base del userId (sin sufijo @c.us o @lid)
+      const userIdSinSufijo = userId.replace(/@(c\.us|lid)$/, '');
+      
+      const esNumeroPrueba = config.TEST_NUMBERS.some(testNum => {
+        // Comparación exacta
+        if (userId === testNum) return true;
+        
+        // Extraer número base del testNum (sin sufijo)
+        const testNumSinSufijo = testNum.replace(/@(c\.us|lid)$/, '');
+        
+        // Comparar números sin sufijo directamente
+        if (userIdSinSufijo === testNumSinSufijo) return true;
+        
+        // Si el número de prueba tiene sufijo, también comparar con el userId completo
+        if (testNum.includes('@') && userId.includes(testNumSinSufijo)) return true;
+        
+        // Comparar con y sin prefijo 51
+        // Si userId tiene prefijo 51, comparar sin él
+        if (userIdSinSufijo.startsWith('51') && userIdSinSufijo.length > 2) {
+          const userIdSinPrefijo = userIdSinSufijo.substring(2);
+          if (userIdSinPrefijo === testNumSinSufijo || testNumSinSufijo === userIdSinPrefijo) {
+            return true;
+          }
+        }
+        
+        // Si testNum tiene prefijo 51, comparar sin él
+        if (testNumSinSufijo.startsWith('51') && testNumSinSufijo.length > 2) {
+          const testNumSinPrefijo = testNumSinSufijo.substring(2);
+          if (testNumSinPrefijo === userIdSinSufijo || userIdSinSufijo === testNumSinPrefijo) {
+            return true;
+          }
+        }
+        
+        // Si userId NO tiene prefijo 51, agregarlo y comparar
+        if (!userIdSinSufijo.startsWith('51') && userIdSinSufijo.length === 9) {
+          const userIdConPrefijo = '51' + userIdSinSufijo;
+          if (userIdConPrefijo === testNumSinSufijo || testNumSinSufijo === userIdConPrefijo) {
+            return true;
+          }
+        }
+        
+        // Si testNum NO tiene prefijo 51, agregarlo y comparar
+        if (!testNumSinSufijo.startsWith('51') && testNumSinSufijo.length === 9) {
+          const testNumConPrefijo = '51' + testNumSinSufijo;
+          if (testNumConPrefijo === userIdSinSufijo || userIdSinSufijo === testNumConPrefijo) {
+            return true;
+          }
+        }
+        
+        return false;
+      });
+
+      if (!esAdminVerificacion && !esNumeroPrueba) {
+        // Loggear siempre para debugging (puede ser útil ver qué números están intentando)
+        logMessage("INFO", "Mensaje ignorado - usuario no es administrador ni número de prueba", {
+          userId: userId,
+          numero: extraerNumero(userId),
+          userIdSinSufijo: userIdSinSufijo,
+          testNumbers: config.TEST_NUMBERS,
+        });
+        return; // Ignorar mensaje si no es admin ni número de prueba
+      }
+      
+      // Log cuando SÍ es número de prueba (para debugging)
+      if (esNumeroPrueba && LOG_LEVEL === 'verbose') {
+        logMessage("INFO", "Usuario identificado como número de prueba", {
+          userId: userId,
+          numero: extraerNumero(userId),
+          userIdSinSufijo: userIdSinSufijo,
+        });
       }
       let userName =
         message.notifyName ||
@@ -1675,40 +1748,57 @@ async function start(client) {
         storage.getUserName(userId) ||
         "Usuario";
       
-      // Intentar obtener el número real del mensaje si está disponible
-      // Algunos mensajes tienen el número en diferentes propiedades
-      const numeroRealDelMensaje = message.wid?.user || 
-                                   message.author || 
-                                   message.from?.split('@')[0] || 
-                                   userId.split('@')[0] ||
-                                   null;
+      // Extraer número real del payload (SOLO desde message.from o contacts[0].wa_id)
+      const phone = extraerNumeroReal(message);
+      const sessionId = extraerSessionId(userId);
       
-      // Log para debugging - SIEMPRE mostrar información del mensaje
-      console.log(`\n📱 INFORMACIÓN DEL MENSAJE:`);
-      console.log(`   message.from: ${message.from}`);
-      console.log(`   message.wid: ${JSON.stringify(message.wid)}`);
-      console.log(`   message.author: ${message.author}`);
-      console.log(`   message.notifyName: ${message.notifyName}`);
-      console.log(`   message.pushname: ${message.pushname}`);
-      console.log(`   userId extraído: ${userId}`);
-      console.log(`   número real del mensaje: ${numeroRealDelMensaje}\n`);
+      // Determinar país si tenemos phone (extraer código de país)
+      let country = null;
+      if (phone) {
+        // Si el phone empieza con 51, es Perú
+        if (phone.startsWith('51') && phone.length >= 11) {
+          country = 'PE';
+        } else if (phone.length >= 9) {
+          // Intentar detectar país por longitud o prefijo
+          // Por ahora, asumir PE si no se puede determinar
+          country = 'PE';
+        }
+      }
+      
+      // Guardar/actualizar cliente en la base de datos con session_id y phone
+      try {
+        await db.obtenerOCrearCliente(sessionId, phone, country, userName);
+      } catch (error) {
+        logMessage("WARNING", "Error al guardar/actualizar cliente", { 
+          error: error.message,
+          sessionId,
+          phone
+        });
+      }
       
       // Inicializar usuario al recibir mensaje
       inicializarUsuario(userId);
+      
+      // Guardar phone en userData para uso posterior
+      const userData = storage.getUserData(userId) || {};
+      if (phone) {
+        userData.phone = phone;
+        userData.country = country;
+      }
+      userData.sessionId = sessionId;
+      storage.setUserData(userId, userData);
       
       // Sanitizar mensaje antes de procesar
       const text = sanitizarMensaje(message.body || "");
       const textLower = text.toLowerCase();
       
-      // LOG CRÍTICO: Registrar TODOS los mensajes recibidos (especialmente para debugging)
-      logMessage("INFO", `📨 MENSAJE RECIBIDO`, {
-        userId: userId,
-        numero: extraerNumero(userId),
-        userName: userName,
-        mensaje: text,
-        textLower: textLower,
-        longitud: text.length
-      });
+      // Log simplificado - solo en archivo, no en consola
+      if (LOG_LEVEL === 'verbose') {
+        logMessage("INFO", `Mensaje de ${userName}`, {
+          numero: extraerNumero(userId),
+          mensaje: text.substring(0, 50)
+        });
+      }
 
       // Actualizar estadísticas
       estadisticas.totalMensajes++;
@@ -1758,37 +1848,17 @@ async function start(client) {
       // ============================================
       // COMANDOS DEL ADMINISTRADOR (PROCESAR PRIMERO - ANTES DE CUALQUIER OTRA LÓGICA)
       // ============================================
-      // Verificar si es administrador INMEDIATAMENTE después de obtener el texto
-      // Usar el número real del mensaje que ya se extrajo arriba
-      logMessage("INFO", `🔍 VERIFICANDO SI ES ADMINISTRADOR`, {
-        userId: userId,
-        numero: extraerNumero(userId),
-        numeroRealDelMensaje: numeroRealDelMensaje,
-        adminNumbers: ADMIN_NUMBERS.map(n => extraerNumero(n))
-      });
-      
+      // Verificar si es administrador
       const esAdmin = esAdministrador(userId, numeroRealDelMensaje);
       
-      // Log detallado para debugging - SIEMPRE mostrar
-      logMessage("INFO", `🔍 RESULTADO VERIFICACIÓN ADMINISTRADOR`, {
-        esAdmin: esAdmin,
-        userId: userId,
-        numero: extraerNumero(userId),
-        mensaje: text.substring(0, 50),
-        textLower: textLower.substring(0, 50)
-      });
-      
       if (esAdmin) {
-        logMessage("INFO", `🔑 ✅ ADMINISTRADOR CONFIRMADO - PROCESANDO COMANDOS`, {
-          userId: userId,
-          numero: extraerNumero(userId),
-          mensaje: text,
-          textLower: textLower,
-          tipoMensaje: message.type
-        });
+        if (LOG_LEVEL === 'verbose') {
+          logMessage("INFO", `Admin: ${userName}`, {
+            comando: text.substring(0, 30)
+          });
+        }
         
-        // PRIMERO: Procesar comandos de administrador (confirmar, cancelar, modificar, detalle cita, etc.)
-        // Esto procesa todos los comandos nuevos que están en handlers/admin.js
+        // Procesar comandos de administrador
         const procesadoAdmin = await adminHandler.procesarComandosAdmin(
           client,
           message,
@@ -1800,15 +1870,13 @@ async function start(client) {
         );
         
         if (procesadoAdmin) {
-          return; // Si se procesó un comando, salir
+          return;
         }
         
-        // SEGUNDO: Procesar comandos legacy que están en main.js (mantener compatibilidad)
-        // Comando: Procesar imagen de cita (solo administradores)
+        // Procesar imagen de cita (solo administradores)
         if (message.type === 'image') {
-          console.log(`\n📷 IMAGEN RECIBIDA DE ADMINISTRADOR - PROCESANDO...\n`);
           await procesarImagenCita(client, message, userId);
-          return; // Salir después de procesar la imagen
+          return;
         }
         
         // Comando: Estadísticas
@@ -1960,16 +2028,9 @@ async function start(client) {
         // Verificar si el comando empieza con "citas_"
         const esComandoCitas = textoTrim.startsWith("citas_");
         
-        console.log(`\n🔍 VERIFICANDO COMANDO DE CITAS:`);
-        console.log(`   Texto original: "${text}"`);
-        console.log(`   TextLower: "${textLower}"`);
-        console.log(`   TextoTrim: "${textoTrim}"`);
-        console.log(`   ¿Empieza con "citas_"? ${esComandoCitas ? '✅ SÍ' : '❌ NO'}`);
-        
         if (esComandoCitas) {
           // Extraer la fecha del comando (después de "citas_")
-          const fechaStr = textoTrim.substring(6); // Quitar "citas_"
-          console.log(`   Fecha extraída del comando: "${fechaStr}"`);
+          const fechaStr = textoTrim.substring(6);
           
           // Parsear la fecha en formato dd/MM/yyyy
           let fechaConsulta = null;
@@ -1977,67 +2038,33 @@ async function start(client) {
             const partesFecha = fechaStr.split('/');
             if (partesFecha.length === 3) {
               const dia = parseInt(partesFecha[0], 10);
-              const mes = parseInt(partesFecha[1], 10) - 1; // Los meses en JS son 0-indexed
+              const mes = parseInt(partesFecha[1], 10) - 1;
               const año = parseInt(partesFecha[2], 10);
               
-              // Validar que los números sean válidos
               if (!isNaN(dia) && !isNaN(mes) && !isNaN(año) && 
                   dia >= 1 && dia <= 31 && 
                   mes >= 0 && mes <= 11 && 
                   año >= 2020 && año <= 2100) {
                 fechaConsulta = new Date(año, mes, dia);
                 
-                // Verificar que la fecha es válida (por ejemplo, no 31/02)
-                if (fechaConsulta.getDate() === dia && 
-                    fechaConsulta.getMonth() === mes && 
-                    fechaConsulta.getFullYear() === año) {
-                  console.log(`   ✅ Fecha válida parseada: ${fechaConsulta.toLocaleDateString('es-PE')}`);
-                } else {
-                  console.log(`   ❌ Fecha inválida (ej: 31/02)`);
+                if (fechaConsulta.getDate() !== dia || 
+                    fechaConsulta.getMonth() !== mes || 
+                    fechaConsulta.getFullYear() !== año) {
                   fechaConsulta = null;
                 }
-              } else {
-                console.log(`   ❌ Números de fecha inválidos`);
-                fechaConsulta = null;
               }
-            } else {
-              console.log(`   ❌ Formato de fecha incorrecto (debe ser dd/MM/yyyy)`);
-              fechaConsulta = null;
             }
           } catch (error) {
-            console.log(`   ❌ Error al parsear fecha: ${error.message}`);
             fechaConsulta = null;
           }
           
           if (fechaConsulta) {
-            console.log(`\n✅ ✅ ✅ COMANDO "CITAS" DETECTADO - Fecha: ${fechaConsulta.toLocaleDateString('es-PE')} ✅ ✅ ✅\n`);
-            
-            logMessage("INFO", `✅ COMANDO "CITAS" DETECTADO - Ejecutando...`, {
-              userId: extraerNumero(userId),
-              mensaje: text,
-              fecha: fechaConsulta.toISOString(),
-              fechaFormateada: fechaConsulta.toLocaleDateString('es-PE')
-            });
-            
             try {
-              console.log(`\n📋 Obteniendo citas del día ${fechaConsulta.toLocaleDateString('es-PE')}...\n`);
               const citas = await obtenerCitasDelDia(fechaConsulta);
-              console.log(`\n✅ Citas obtenidas correctamente`);
-              console.log(`   Longitud del mensaje: ${citas.length} caracteres`);
-              console.log(`   Enviando a administrador...\n`);
-              
-              logMessage("SUCCESS", `Citas obtenidas, enviando a administrador`, {
-                fecha: fechaConsulta.toLocaleDateString('es-PE'),
-                numeroCitas: citas.split('\n').filter(l => l.includes('✅') || l.includes('⏳')).length
-              });
               await enviarMensajeSeguro(client, userId, citas);
-              console.log(`\n✅ ✅ ✅ CITAS DEL DÍA ENVIADAS AL ADMINISTRADOR CORRECTAMENTE ✅ ✅ ✅\n`);
-              logMessage("SUCCESS", "✅ Citas del día enviadas al administrador correctamente");
+              logMessage("SUCCESS", `Citas enviadas: ${fechaConsulta.toLocaleDateString('es-PE')}`);
             } catch (error) {
-              logMessage("ERROR", "❌ Error al obtener citas del día", {
-                error: error.message,
-                stack: error.stack
-              });
+              logMessage("ERROR", "Error al obtener citas", { error: error.message });
               await enviarMensajeSeguro(
                 client,
                 userId,
@@ -2045,8 +2072,6 @@ async function start(client) {
               );
             }
           } else {
-            // Fecha inválida
-            console.log(`\n❌ FECHA INVÁLIDA EN EL COMANDO\n`);
             await enviarMensajeSeguro(
               client,
               userId,
@@ -2057,11 +2082,6 @@ async function start(client) {
               "• `citas_15/12/2024` - Citas del 15 de diciembre de 2024\n" +
               "• `citas_01/02/2025` - Citas del 1 de febrero de 2025"
             );
-            logMessage("WARNING", `Comando de citas con fecha inválida`, {
-              userId: extraerNumero(userId),
-              mensaje: text,
-              fechaStr: fechaStr
-            });
           }
           return; // IMPORTANTE: Salir inmediatamente después de procesar el comando
         }
@@ -2083,63 +2103,39 @@ async function start(client) {
           textoTrimIA === "ai on" ||
           textoTrimIA === "activar inteligencia artificial";
         
-        console.log(`\n🔍 VERIFICANDO COMANDOS DE IA:`);
-        console.log(`   Texto: "${textoTrimIA}"`);
-        console.log(`   ¿Es "desactivar ia"? ${esDesactivarIA ? '✅ SÍ' : '❌ NO'}`);
-        console.log(`   ¿Es "activar ia"? ${esActivarIA ? '✅ SÍ' : '❌ NO'}`);
-        
         if (esDesactivarIA) {
-          console.log(`\n✅ ✅ ✅ COMANDO "DESACTIVAR IA" DETECTADO - EJECUTANDO... ✅ ✅ ✅\n`);
           iaGlobalDesactivada = true;
           try {
-            // Sincronizar con SQLite
             await db.establecerConfiguracion('flag_ia_activada', '0', 'IA desactivada globalmente');
             await enviarMensajeSeguro(
               client,
               userId,
               "✅ *IA Desactivada*\n\nLa inteligencia artificial ha sido desactivada globalmente.\n\nEl bot seguirá funcionando pero sin respuestas de IA.\n\nPara reactivarla, escribe: *Activar IA*"
             );
-            logMessage(
-              "INFO",
-              "IA desactivada globalmente por el administrador"
-            );
-            console.log(`\n✅ IA DESACTIVADA CORRECTAMENTE\n`);
+            logMessage("SUCCESS", "IA desactivada");
           } catch (error) {
-            logMessage("ERROR", "Error al desactivar IA", {
-              error: error.message,
-            });
-            console.log(`\n❌ ERROR AL DESACTIVAR IA: ${error.message}\n`);
+            logMessage("ERROR", "Error al desactivar IA", { error: error.message });
           }
           return;
         }
 
         if (esActivarIA) {
-          console.log(`\n✅ ✅ ✅ COMANDO "ACTIVAR IA" DETECTADO - EJECUTANDO... ✅ ✅ ✅\n`);
           iaGlobalDesactivada = false;
           try {
-            // Sincronizar con SQLite
             await db.establecerConfiguracion('flag_ia_activada', '1', 'IA activada globalmente');
             await enviarMensajeSeguro(
               client,
               userId,
               "✅ *IA Activada*\n\nLa inteligencia artificial ha sido reactivada globalmente.\n\nEl bot ahora puede usar IA para responder a los usuarios."
             );
-            logMessage(
-              "INFO",
-              "IA reactivada globalmente por el administrador"
-            );
-            console.log(`\n✅ IA ACTIVADA CORRECTAMENTE\n`);
+            logMessage("SUCCESS", "IA activada");
           } catch (error) {
-            logMessage("ERROR", "Error al activar IA", {
-              error: error.message,
-            });
-            console.log(`\n❌ ERROR AL ACTIVAR IA: ${error.message}\n`);
+            logMessage("ERROR", "Error al activar IA", { error: error.message });
           }
           return;
         }
         
-        // Comando: Desactivar bot para un usuario específico (solo si NO es comando de IA)
-        // Formato: "desactivar bot [número]" o "desactivar bot" (muestra lista)
+        // Comando: Desactivar bot para un usuario específico
         const esDesactivarBot = 
           textoTrimIA === "desactivar bot" ||
           textoTrimIA.startsWith("desactivar bot ") ||
@@ -2149,11 +2145,6 @@ async function start(client) {
           textoTrimIA === "activar bot" ||
           textoTrimIA.startsWith("activar bot ") ||
           textoTrimIA === "bot on";
-        
-        console.log(`\n🔍 VERIFICANDO COMANDOS DE BOT:`);
-        console.log(`   Texto: "${textoTrimIA}"`);
-        console.log(`   ¿Es "desactivar bot"? ${esDesactivarBot ? '✅ SÍ' : '❌ NO'}`);
-        console.log(`   ¿Es "activar bot"? ${esActivarBot ? '✅ SÍ' : '❌ NO'}`);
 
         // Comando: Estado de IA
         if (
@@ -2355,53 +2346,193 @@ async function start(client) {
           }
           
           // Si hay número, activar para usuario específico
-          // Intentar extraer número del mensaje
-          const numeroMatch = text.match(/(\d{9,12})/);
+          const numeroMatch = text.match(/(?:activar bot|bot on)\s+(\+?\d{9,12})/i) || text.match(/(\d{9,12})/);
 
           if (numeroMatch) {
-            const numeroBuscado = numeroMatch[1];
+            // Normalizar el número al formato estándar 51XXXXXXXXX
+            const numeroBuscado = normalizarTelefono(numeroMatch[1]);
+            if (!numeroBuscado) {
+              await enviarMensajeSeguro(
+                client,
+                userId,
+                "❌ Número de teléfono inválido.\n\nUso: *Activar bot [número]*\n\nEjemplo: *Activar bot 972002363*"
+              );
+              return;
+            }
+            
             let usuarioEncontrado = null;
+            let nombreUsuario = null;
 
-            // Buscar el usuario por número
+            // 1. Buscar primero en memoria (storage.userNames)
+            // Generar todas las variantes posibles del número buscado
+            const variantesBuscado = [
+              numeroBuscado,
+              numeroBuscado.substring(2), // Sin prefijo 51
+              '51' + numeroBuscado, // Con prefijo (si no lo tiene)
+            ].filter(v => v && v.length >= 9);
+            
             for (const [uid, nombre] of storage.userNames.entries()) {
               const numeroUsuario = extraerNumero(uid);
-              if (
-                numeroUsuario === numeroBuscado ||
-                numeroUsuario.includes(numeroBuscado)
-              ) {
+              const numeroUsuarioNormalizado = normalizarTelefono(numeroUsuario);
+              
+              // Comparar con número normalizado
+              if (numeroUsuarioNormalizado === numeroBuscado) {
                 usuarioEncontrado = uid;
+                nombreUsuario = nombre;
                 break;
+              }
+              
+              // Comparar con todas las variantes
+              for (const variante of variantesBuscado) {
+                if (normalizarTelefono(numeroUsuario) === normalizarTelefono(variante)) {
+                  usuarioEncontrado = uid;
+                  nombreUsuario = nombre;
+                  break;
+                }
+              }
+              
+              if (usuarioEncontrado) break;
+              
+              // También comparar directamente (sin normalizar) para casos edge
+              if (numeroUsuario === numeroBuscado || 
+                  numeroUsuario === numeroBuscado.substring(2) ||
+                  numeroUsuario === '51' + numeroBuscado ||
+                  numeroBuscado === numeroUsuario ||
+                  numeroBuscado === '51' + numeroUsuario ||
+                  numeroBuscado.substring(2) === numeroUsuario) {
+                usuarioEncontrado = uid;
+                nombreUsuario = nombre;
+                break;
+              }
+            }
+
+            // 2. Si no se encuentra en memoria, buscar en la base de datos de clientes por phone
+            if (!usuarioEncontrado) {
+              try {
+                // Buscar cliente por phone en la BD
+                const cliente = await db.obtenerClientePorPhone(numeroBuscado);
+                
+                // Si no se encuentra, intentar sin prefijo 51
+                if (!cliente && numeroBuscado.startsWith('51') && numeroBuscado.length > 2) {
+                  const clienteSinPrefijo = await db.obtenerClientePorPhone(numeroBuscado.substring(2));
+                  if (clienteSinPrefijo) {
+                    nombreUsuario = clienteSinPrefijo.nombre || "Usuario";
+                    if (clienteSinPrefijo.session_id) {
+                      // Buscar si el session_id existe en storage
+                      if (storage.userNames.has(clienteSinPrefijo.session_id)) {
+                        usuarioEncontrado = clienteSinPrefijo.session_id;
+                        nombreUsuario = storage.userNames.get(clienteSinPrefijo.session_id) || nombreUsuario;
+                      } else {
+                        usuarioEncontrado = clienteSinPrefijo.session_id;
+                      }
+                    }
+                  }
+                } else if (cliente && cliente.session_id) {
+                  nombreUsuario = cliente.nombre || "Usuario";
+                  // Buscar si el session_id existe en storage
+                  if (storage.userNames.has(cliente.session_id)) {
+                    usuarioEncontrado = cliente.session_id;
+                    nombreUsuario = storage.userNames.get(cliente.session_id) || nombreUsuario;
+                  } else {
+                    usuarioEncontrado = cliente.session_id;
+                  }
+                }
+              } catch (error) {
+                logMessage("WARNING", "Error al buscar cliente en BD", { error: error.message });
+              }
+            }
+
+            // 3. Si aún no se encuentra, buscar en reservas
+            if (!usuarioEncontrado) {
+              try {
+                const reservas = await db.obtenerReservas({});
+                for (const reserva of reservas) {
+                  const numeroReserva = extraerNumero(reserva.userId);
+                  const numeroReservaNormalizado = normalizarTelefono(numeroReserva);
+                  
+                  // Comparar con número normalizado
+                  if (numeroReservaNormalizado === numeroBuscado) {
+                    usuarioEncontrado = reserva.userId;
+                    nombreUsuario = reserva.userName;
+                    break;
+                  }
+                  
+                  // Comparar con variantes
+                  if (numeroReservaNormalizado === normalizarTelefono(numeroBuscado.substring(2)) ||
+                      normalizarTelefono(numeroReserva) === numeroBuscado ||
+                      numeroReserva === numeroBuscado ||
+                      numeroReserva === numeroBuscado.substring(2) ||
+                      numeroReserva === '51' + numeroBuscado ||
+                      numeroBuscado === '51' + numeroReserva) {
+                    usuarioEncontrado = reserva.userId;
+                    nombreUsuario = reserva.userName;
+                    break;
+                  }
+                }
+              } catch (error) {
+                logMessage("WARNING", "Error al buscar en reservas", { error: error.message });
+              }
+            }
+            
+            // 4. Si aún no se encuentra, buscar en TODOS los userIds de storage (último recurso)
+            if (!usuarioEncontrado) {
+              logMessage("INFO", "Buscando usuario en todos los userIds de storage", {
+                numeroBuscado: numeroBuscado,
+                totalUserIds: storage.userNames.size
+              });
+              
+              for (const [uid, nombre] of storage.userNames.entries()) {
+                const numUid = extraerNumero(uid);
+                const numUidNormalizado = normalizarTelefono(numUid);
+                
+                // Comparación flexible
+                if (numUidNormalizado === numeroBuscado ||
+                    numUid === numeroBuscado ||
+                    numUid === numeroBuscado.substring(2) ||
+                    numUid === '51' + numeroBuscado ||
+                    numeroBuscado === '51' + numUid ||
+                    (numeroBuscado.startsWith('51') && numUid === numeroBuscado.substring(2)) ||
+                    (!numeroBuscado.startsWith('51') && numUidNormalizado === '51' + numeroBuscado)) {
+                  usuarioEncontrado = uid;
+                  nombreUsuario = nombre;
+                  logMessage("SUCCESS", "Usuario encontrado en búsqueda exhaustiva", {
+                    uid: uid,
+                    numero: numUid,
+                    numeroBuscado: numeroBuscado
+                  });
+                  break;
+                }
               }
             }
 
             if (usuarioEncontrado) {
               storage.setBotDesactivado(usuarioEncontrado, false);
               // Solo remover de humanModeUsers si fue agregado por el comando del admin
-              // (no remover si está en modo asesor por otra razón)
               const userDataAdmin = storage.getUserData(usuarioEncontrado) || {};
               if (userDataAdmin?.botDesactivadoPorAdmin) {
                 storage.setHumanMode(usuarioEncontrado, false);
               }
               userDataAdmin.botDesactivadoPorAdmin = false;
-                // Reactivar IA si fue desactivada solo por el comando del admin
+              // Reactivar IA si fue desactivada solo por el comando del admin
               userDataAdmin.iaDesactivada = false;
               storage.setUserData(usuarioEncontrado, userDataAdmin);
+              
+              // Guardar nombre si no existe
+              if (nombreUsuario && !storage.getUserName(usuarioEncontrado)) {
+                storage.setUserName(usuarioEncontrado, nombreUsuario);
+              }
 
               try {
                 await enviarMensajeSeguro(
                   client,
                   userId,
                   `✅ *Bot Reactivado*\n\nBot y IA reactivados para:\n👤 ${
-                    storage.getUserName(usuarioEncontrado) || "Usuario"
-                  }\n📱 ${extraerNumero(
-                    usuarioEncontrado
-                  )}\n\nEl bot ahora puede responder automáticamente.`
+                    nombreUsuario || storage.getUserName(usuarioEncontrado) || "Usuario"
+                  }\n📱 ${numeroBuscado}\n\nEl bot ahora puede responder automáticamente.`
                 );
                 logMessage(
-                  "INFO",
-                  `Bot reactivado para usuario ${
-                    storage.getUserName(usuarioEncontrado)
-                  } (${extraerNumero(usuarioEncontrado)}) por el administrador`
+                  "SUCCESS",
+                  `Bot reactivado: ${nombreUsuario || "Usuario"} (${numeroBuscado})`
                 );
               } catch (error) {
                 logMessage("ERROR", "Error al reactivar bot", {
@@ -2409,11 +2540,32 @@ async function start(client) {
                 });
               }
             } else {
+              // Log detallado para debugging
+              const usuariosEnStorage = Array.from(storage.userNames.keys()).map(uid => ({
+                uid: uid,
+                numero: extraerNumero(uid),
+                numeroNormalizado: normalizarTelefono(extraerNumero(uid)),
+                nombre: storage.getUserName(uid)
+              }));
+              
+              logMessage("WARNING", "Usuario no encontrado para activar bot", {
+                numeroBuscado: numeroBuscado,
+                totalUsuariosEnStorage: storage.userNames.size,
+                usuariosEnStorage: usuariosEnStorage.slice(0, 10), // Primeros 10 para no saturar
+              });
+              
               try {
+                const listaUsuarios = usuariosEnStorage.slice(0, 5)
+                  .map(u => `• ${u.nombre || 'Usuario'} (${u.numero})`)
+                  .join('\n');
+                
                 await enviarMensajeSeguro(
                   client,
                   userId,
-                  `❌ *Usuario no encontrado*\n\nNo se encontró un usuario con el número: ${numeroBuscado}`
+                  `❌ *Usuario no encontrado*\n\nNo se encontró un usuario con el número: ${numeroBuscado}\n\n` +
+                  `Verifica que el número sea correcto y que el usuario haya interactuado con el bot al menos una vez.\n\n` +
+                  (usuariosEnStorage.length > 0 ? `*Usuarios recientes:*\n${listaUsuarios}\n\n` : '') +
+                  `*Nota:* El número debe coincidir exactamente con el formato usado por WhatsApp.`
                 );
               } catch (error) {
                 logMessage("ERROR", "Error al buscar usuario", {
@@ -2847,12 +2999,35 @@ async function start(client) {
       // VERIFICAR SI EL USUARIO ESTÁ BLOQUEADO
       // ============================================
       if (!esAdmin) {
-        const telefonoUsuario = extraerNumero(userId);
+        let telefonoUsuario = extraerNumero(userId);
+        // Normalizar el teléfono para que coincida con el formato usado al bloquear
+        // Quitar todos los caracteres no numéricos
+        telefonoUsuario = telefonoUsuario.replace(/\D/g, '');
+        // Si tiene 9 dígitos y no empieza con 51, agregar prefijo
+        if (telefonoUsuario.length === 9 && !telefonoUsuario.startsWith('51')) {
+          telefonoUsuario = '51' + telefonoUsuario;
+        }
+        
         try {
+          // Buscar con el formato normalizado y también con variaciones
           const estaBloqueado = await db.estaUsuarioBloqueado(telefonoUsuario);
           if (estaBloqueado) {
-            logMessage("INFO", `Mensaje ignorado de usuario bloqueado`, { userId, telefono: telefonoUsuario });
+            if (LOG_LEVEL === 'verbose') {
+              logMessage("INFO", `Mensaje ignorado de usuario bloqueado`, { userId, telefono: telefonoUsuario });
+            }
             return;
+          }
+          
+          // También verificar con el número sin prefijo si tiene 11 dígitos
+          if (telefonoUsuario.length === 11 && telefonoUsuario.startsWith('51')) {
+            const telefonoSinPrefijo = telefonoUsuario.substring(2);
+            const estaBloqueadoSinPrefijo = await db.estaUsuarioBloqueado(telefonoSinPrefijo);
+            if (estaBloqueadoSinPrefijo) {
+              if (LOG_LEVEL === 'verbose') {
+                logMessage("INFO", `Mensaje ignorado de usuario bloqueado (sin prefijo)`, { userId, telefono: telefonoSinPrefijo });
+              }
+              return;
+            }
           }
         } catch (error) {
           logMessage("WARNING", "Error al verificar si usuario está bloqueado", { error: error.message });
@@ -3261,16 +3436,8 @@ async function start(client) {
       // ============================================
       // El código de reserva ya se maneja arriba, aquí solo procesamos con IA
       
-      // IMPORTANTE: Si es administrador y no se procesó ningún comando, 
-      // NO procesar con IA - los administradores solo usan comandos
+      // Si es administrador y no se procesó ningún comando, NO procesar con IA
       if (esAdmin) {
-        console.log(`\n⚠️ ADMINISTRADOR ENVIÓ MENSAJE PERO NO SE DETECTÓ COMANDO`);
-        console.log(`   Mensaje: "${text}"`);
-        console.log(`   TextLower: "${textLower}"`);
-        console.log(`   NO se procesará con IA\n`);
-        
-        // Si es administrador y el mensaje parece un comando pero no se procesó,
-        // mostrar ayuda en lugar de procesar con IA
         const pareceComando = 
           textLower.includes("citas") || 
           textLower.includes("reservas") || 
@@ -3280,11 +3447,6 @@ async function start(client) {
           textLower.includes("bot");
         
         if (pareceComando) {
-          logMessage("WARNING", `⚠️ Administrador envió mensaje que parece comando pero no se procesó`, {
-            userId: extraerNumero(userId),
-            mensaje: text,
-            textLower: textLower
-          });
           await enviarMensajeSeguro(
             client,
             userId,
@@ -3294,12 +3456,9 @@ async function start(client) {
             "• `activar ia` / `desactivar ia` - Controlar IA\n" +
             "• `estado ia` - Ver estado de la IA"
           );
-          return; // Salir para no procesar con IA
-        } else {
-          // Si no parece comando, también evitar IA para administradores
-          logMessage("INFO", `Administrador envió mensaje que no es comando - ignorando`);
-          return; // Los administradores solo usan comandos, no conversación con IA
+          return;
         }
+        return; // Los administradores solo usan comandos, no conversación con IA
       }
 
       // Respuesta por defecto - SIEMPRE usar IA primero
@@ -3329,6 +3488,7 @@ async function start(client) {
 
         const userDataIA = storage.getUserData(userId) || {};
         const contextoUsuario = {
+          userId: userId, // IMPORTANTE: incluir userId para límites de IA
           estado: storage.getUserState(userId) || "conversacion",
           nombre: userName,
           yaSaludo: userDataIA?.saludoEnviado || false,
@@ -3336,6 +3496,19 @@ async function start(client) {
         };
 
         const respuestaIA = await consultarIA(text, contextoUsuario);
+        
+        // Log detallado si la IA no responde
+        if (!respuestaIA && LOG_LEVEL === 'verbose') {
+          const modoIA = await db.obtenerConfiguracion('modo_ia') || 'auto';
+          const puedeUsar = userId ? await db.puedeUsarIA(userId) : null;
+          logMessage("INFO", `IA no respondió para ${userName}`, {
+            userId: extraerNumero(userId),
+            modoIA: modoIA,
+            puedeUsar: puedeUsar,
+            iaGlobalDesactivada: iaGlobalDesactivada,
+            openaiInicializado: typeof consultarIA === 'function'
+          });
+        }
 
         if (respuestaIA) {
           // Si ya se saludó antes, limpiar saludos de la respuesta de la IA
@@ -3388,12 +3561,50 @@ async function start(client) {
         return;
       }
 
-      // Si no hay IA o falló, usar respuesta simple
-      await enviarMensajeSeguro(
-        client,
-        userId,
-        "😊 Disculpa, no pude procesar tu mensaje en este momento. Por favor, intenta reformular tu pregunta o pregunta algo diferente. ¿En qué puedo ayudarte? 😊"
-      );
+      // Si no hay IA o falló, verificar el motivo antes de enviar mensaje genérico
+      // Solo enviar mensaje si realmente se intentó usar IA pero falló
+      if (puedeUsarIA) {
+        // La IA debería haber respondido pero no lo hizo
+        // Verificar posibles causas
+        const modoIA = await db.obtenerConfiguracion('modo_ia') || 'auto';
+        const puedeUsar = await db.puedeUsarIA(userId);
+        
+        if (modoIA === 'manual') {
+          // En modo manual, no responder automáticamente
+          if (LOG_LEVEL === 'verbose') {
+            logMessage("INFO", `IA en modo manual - no respondiendo a ${userName}`);
+          }
+          return;
+        }
+        
+        if (modoIA === 'solo_faq') {
+          // En modo solo_faq, solo responder FAQs
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            "😊 Disculpa, solo puedo responder preguntas frecuentes en este momento. Por favor, contacta con un asesor escribiendo 'asesor' para más ayuda. 😊"
+          );
+          return;
+        }
+        
+        if (!puedeUsar.puede) {
+          // Ya se envió el mensaje de límite desde consultarIA
+          return;
+        }
+        
+        // Si llegamos aquí, la IA falló por otra razón
+        logMessage("WARNING", `IA no respondió para ${userName} - posible error`, {
+          userId: extraerNumero(userId),
+          modoIA: modoIA,
+          puedeUsar: puedeUsar
+        });
+        
+        await enviarMensajeSeguro(
+          client,
+          userId,
+          "😊 Disculpa, no pude procesar tu mensaje en este momento. Por favor, intenta reformular tu pregunta o pregunta algo diferente. ¿En qué puedo ayudarte? 😊"
+        );
+      }
     } catch (error) {
       logMessage("ERROR", `Error general al procesar mensaje`, {
         error: error.message,

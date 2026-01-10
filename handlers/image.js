@@ -206,12 +206,13 @@ async function crearCitaCompleta(client, userIdAdmin, datosCita) {
       throw new Error('Número de teléfono del cliente no encontrado en la imagen');
     }
     
-    // Limpiar y formatear número de teléfono
-    userIdCliente = userIdCliente.replace(/\D/g, ''); // Solo números
-    if (!userIdCliente.startsWith('51') && userIdCliente.length === 9) {
-      userIdCliente = '51' + userIdCliente; // Agregar código de país si falta
+    // Normalizar número de teléfono al formato estándar 51XXXXXXXXX
+    const { normalizarTelefono } = require('./messageHelpers');
+    const numeroNormalizado = normalizarTelefono(userIdCliente);
+    if (!numeroNormalizado) {
+      throw new Error('Número de teléfono inválido en la imagen');
     }
-    userIdCliente = userIdCliente + '@c.us';
+    userIdCliente = numeroNormalizado + '@c.us';
     
     // Obtener nombre del cliente
     const userName = datosCita.nombreCliente || 'Cliente';
