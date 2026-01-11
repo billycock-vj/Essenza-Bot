@@ -15,12 +15,9 @@ Este documento contiene toda la información que la IA necesita conocer sobre Es
 
 ## 🕐 HORARIO DE ATENCIÓN
 
-- **Lunes a Jueves:** 11:00 - 19:00
-- **Viernes:** 11:00 - 19:00
-- **Sábado:** 10:00 - 16:00
-- **Domingo:** Cerrado
+- **Lunes a Domingo:** 11:00 AM - 6:00 PM
 
-**IMPORTANTE:** Si un cliente pregunta por "mañana" o "hoy", verificar qué día de la semana es y dar el horario correcto de ese día específico.
+**IMPORTANTE:** El horario es el mismo todos los días de la semana: de 11:00 AM a 6:00 PM.
 
 ---
 
@@ -37,8 +34,7 @@ Este documento contiene toda la información que la IA necesita conocer sobre Es
 
 ## 💰 DEPÓSITO PARA RESERVAS
 
-- **Servicios menores a S/50:** Depósito de S/10
-- **Servicios de S/50 o más:** Depósito de S/20
+- **Todos los servicios:** Depósito de S/20
 
 **Nota:** El depósito se descuenta del total del servicio.
 

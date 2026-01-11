@@ -152,7 +152,7 @@ module.exports = {
   BANCO_CUENTA: process.env.BANCO_CUENTA || "19194566778095",
   UBICACION: process.env.UBICACION || "Jirón Ricardo Palma 603, Puente Piedra, Lima, Perú",
   MAPS_LINK: process.env.MAPS_LINK || "https://maps.app.goo.gl/Fu2Dd9tiiiwptV5m6",
-  DEPOSITO_RESERVA: process.env.DEPOSITO_RESERVA || "20",
+  DEPOSITO_RESERVA: process.env.DEPOSITO_RESERVA || "20", // Depósito fijo de S/20 para todos los servicios
   LOG_LEVEL: process.env.LOG_LEVEL || 'normal',
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || null,
   MAX_RESERVAS: 1000, // Límite máximo de reservas en memoria

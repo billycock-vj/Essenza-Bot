@@ -14,6 +14,9 @@ const OpenAI = require("openai");
 const fs = require("fs");
 const path = require("path");
 const http = require("http");
+const config = require("./config");
+const adminHandler = require("./handlers/admin");
+const db = require("./services/database");
 
 // ============================================
 // CONFIGURACIÓN
@@ -27,7 +30,7 @@ const IS_FLY_IO = process.env.FLY_APP_NAME !== undefined || fs.existsSync('/data
 // Configurar paths dinámicos
 const TOKENS_PATH = IS_FLY_IO 
   ? '/data/tokens' 
-  : path.join(__dirname, 'tokens');
+  : 'C:\\apps\\essenza-bot\\tokens';
 
 // Asegurar que el directorio de tokens existe
 try {
@@ -64,10 +67,7 @@ try {
 **Mapa:** https://maps.app.goo.gl/Fu2Dd9tiiiwptV5m6
 
 **Horario:**
-- Lunes a Jueves: 11:00 - 19:00
-- Viernes: 11:00 - 19:00
-- Sábado: 10:00 - 16:00
-- Domingo: Cerrado
+- Lunes a Domingo: 11:00 AM - 6:00 PM
 
 **Métodos de Pago:**
 - Yape: 953348917 (Esther Ocaña Baron)
@@ -94,7 +94,7 @@ INSTRUCCIONES:
 - Si pregunta por horarios, da el horario específico del día (verificar qué día es hoy/mañana)
 - Si pregunta por ubicación, proporciona la dirección y el mapa
 - Si pregunta por pagos, da la información de Yape y banco
-- Si el cliente quiere reservar, explica el proceso de depósito (S/10 para servicios < S/50, S/20 para servicios >= S/50)
+- Si el cliente quiere reservar, explica el proceso de depósito (S/20 para todos los servicios)
 - Si no sabes algo, di que consultarás y te pondrás en contacto
 - Mantén las respuestas concisas pero completas (máximo 300 palabras)
 
@@ -144,6 +144,22 @@ setInterval(() => {
 // ============================================
 async function consultarIA(mensaje, userId) {
   try {
+    // Obtener modo de IA desde la base de datos
+    const modoIA = await db.obtenerConfiguracion('modo_ia') || 'auto';
+    
+    // Si el modo es 'manual', no responder automáticamente
+    if (modoIA === 'manual') {
+      return null;
+    }
+    
+    // Si el modo es 'solo_faq', solo responder preguntas frecuentes
+    if (modoIA === 'solo_faq') {
+      const esFAQ = detectarPreguntaFrecuente(mensaje);
+      if (!esFAQ) {
+        return null;
+      }
+    }
+    
     // Obtener historial de conversación del usuario
     let historial = conversaciones.get(userId) || [];
     
@@ -172,15 +188,34 @@ async function consultarIA(mensaje, userId) {
     
     const respuestaTexto = respuesta.choices[0].message.content.trim();
     
+    // Reemplazar doble negrita (**texto**) por negrita simple (*texto*) para WhatsApp
+    const respuestaFormateada = respuestaTexto.replace(/\*\*([^*]+)\*\*/g, '*$1*');
+    
     // Agregar respuesta al historial
-    historial.push({ role: "assistant", content: respuestaTexto });
+    historial.push({ role: "assistant", content: respuestaFormateada });
     conversaciones.set(userId, historial);
     
-    return respuestaTexto;
+    return respuestaFormateada;
   } catch (error) {
     console.error("❌ Error al consultar IA:", error.message);
     return "Disculpa, no pude procesar tu mensaje en este momento. Por favor, intenta de nuevo en un momento.";
   }
+}
+
+// Función simple para detectar preguntas frecuentes
+function detectarPreguntaFrecuente(mensaje) {
+  const mensajeLower = mensaje.toLowerCase();
+  const palabrasFAQ = [
+    'horario', 'hora', 'abierto', 'cerrado', 'atencion', 'atención',
+    'precio', 'costo', 'cuanto', 'cuánto', 'precios',
+    'servicio', 'servicios', 'masaje', 'masajes',
+    'reserva', 'reservar', 'cita', 'agendar',
+    'ubicacion', 'ubicación', 'direccion', 'dirección', 'donde', 'dónde',
+    'telefono', 'teléfono', 'contacto', 'whatsapp',
+    'yape', 'pago', 'deposito', 'depósito'
+  ];
+  
+  return palabrasFAQ.some(palabra => mensajeLower.includes(palabra));
 }
 
 // ============================================
@@ -188,26 +223,29 @@ async function consultarIA(mensaje, userId) {
 // ============================================
 console.log("🚀 Iniciando Essenza Bot...");
 console.log("📚 Cargando información de Essenza...");
-console.log("✅ Bot listo. Esperando mensajes...\n");
 
-// Limpiar tokens anteriores para forzar nuevo QR (solo si no estamos en Fly.io o si es necesario)
-if (!IS_FLY_IO && fs.existsSync(TOKENS_PATH)) {
+// Inicializar base de datos (crear tablas si no existen)
+async function iniciarBot() {
   try {
-    const items = fs.readdirSync(TOKENS_PATH);
-    items.forEach(item => {
-      const itemPath = path.join(TOKENS_PATH, item);
-      try {
-        if (fs.statSync(itemPath).isDirectory()) {
-          fs.rmSync(itemPath, { recursive: true, force: true });
-        }
-      } catch (err) {
-        // Ignorar errores
-      }
-    });
+    console.log("🗄️ Inicializando base de datos...");
+    await db.inicializarDB();
+    console.log("✅ Base de datos inicializada correctamente\n");
   } catch (error) {
-    // Ignorar errores de limpieza
+    console.error("❌ Error al inicializar base de datos:", error.message);
+    console.warn("⚠️ Continuando sin base de datos (algunos comandos pueden no funcionar)\n");
   }
+
+  console.log("✅ Bot listo. Esperando mensajes...\n");
+  
+  // Continuar con la inicialización de wppconnect
+  iniciarWppConnect();
 }
+
+function iniciarWppConnect() {
+
+// NOTA: No limpiar tokens para mantener la sesión persistente
+// Si necesitas forzar un nuevo QR, ejecuta manualmente el script limpiar-tokens.ps1
+// o elimina la carpeta tokens/essenza-bot/Default
 
 wppconnect
   .create({
@@ -216,6 +254,7 @@ wppconnect
     disableWelcome: true,
     multiDevice: false,
     folderNameToken: TOKENS_PATH,
+    headless: true,
     catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
       console.clear();
       console.log("\n" + "=".repeat(70));
@@ -237,9 +276,14 @@ wppconnect
         console.log("\n✅ QR escaneado exitosamente - Bot conectado\n");
       } else if (statusSession === "notLogged") {
         console.log("📱 Esperando escaneo de QR...");
+      } else if (statusSession === "isLogged") {
+        console.log("\n✅ Sesión guardada encontrada - Bot conectado automáticamente\n");
+      } else if (statusSession === "autocloseCalled") {
+        console.log("⚠️ Sesión cerrada automáticamente");
+      } else if (statusSession === "desconnectedMobile") {
+        console.log("⚠️ Sesión desconectada desde móvil");
       }
     },
-    headless: true,
     browserArgs: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -272,15 +316,92 @@ wppconnect
           return;
         }
         
+        // ID de prueba permitido - Solo este ID puede interactuar con el bot
+        const ID_PRUEBA_PERMITIDO = '96439782895654@lid';
+        
+        // Verificar si es administrador - Los administradores solo envían comandos, no usan IA
+        const esAdmin = adminHandler.esAdministrador(userId);
+        
+        // Si no es administrador ni el ID de prueba, ignorar completamente
+        if (!esAdmin && userId !== ID_PRUEBA_PERMITIDO) {
+          console.log(`🚫 Mensaje ignorado de ${userId} (no es admin ni ID de prueba)`);
+          return; // Ignorar sin responder
+        }
+        
+        // Verificar si el bot está desactivado (solo para no-admins)
+        if (!esAdmin) {
+          const botActivo = await db.obtenerConfiguracion('flag_bot_activo');
+          if (botActivo === '0') {
+            console.log(`🚫 Bot desactivado - Mensaje ignorado de ${userId}`);
+            return; // Ignorar sin responder
+          }
+        }
+        
         console.log(`📥 [${new Date().toLocaleTimeString()}] Mensaje de ${userId}: ${mensajeTexto.substring(0, 50)}${mensajeTexto.length > 50 ? '...' : ''}`);
         
-        // Consultar IA
+        if (esAdmin) {
+          console.log(`🔑 Administrador detectado: ${userId}`);
+          try {
+            // Crear objeto de estadísticas básico para comandos de admin
+            const estadisticas = {
+              totalMensajes: 0,
+              totalReservas: 0,
+              usuariosActivos: new Set().size
+            };
+            const iaGlobalDesactivada = { value: false };
+            
+            // Intentar procesar comandos de administrador
+            const comandoProcesado = await adminHandler.procesarComandosAdmin(
+              client,
+              message,
+              userId,
+              mensajeTexto,
+              mensajeTexto.toLowerCase(),
+              estadisticas,
+              iaGlobalDesactivada
+            );
+            
+            // Si se procesó un comando, no continuar con IA
+            if (comandoProcesado) {
+              console.log(`✅ Comando de administrador procesado\n`);
+              return;
+            }
+            
+            // Si no es un comando reconocido, informar al administrador
+            await client.sendText(
+              userId,
+              "❓ No reconocí ese comando. Envía 'comandos' para ver la lista de comandos disponibles."
+            );
+            return;
+          } catch (error) {
+            console.error(`❌ Error al procesar comando de administrador: ${error.message}`);
+            // Enviar mensaje de error al administrador
+            try {
+              await client.sendText(
+                userId,
+                `❌ Error al procesar comando: ${error.message}\n\nEnvía 'comandos' para ver la lista disponible.`
+              );
+            } catch (sendError) {
+              console.error(`❌ Error al enviar mensaje de error: ${sendError.message}`);
+            }
+            return;
+          }
+        }
+        
+        // Si no es administrador, usar IA normalmente
+        // (La verificación de flag_bot_activo ya cubre todo, incluyendo IA)
+        
+        // Consultar IA (puede retornar null si el modo no lo permite)
         const respuesta = await consultarIA(mensajeTexto, userId);
         
-        // Enviar respuesta
-        await client.sendText(userId, respuesta);
-        
-        console.log(`✅ [${new Date().toLocaleTimeString()}] Respuesta enviada\n`);
+        // Solo enviar respuesta si la IA respondió
+        if (respuesta) {
+          await client.sendText(userId, respuesta);
+          console.log(`✅ [${new Date().toLocaleTimeString()}] Respuesta enviada\n`);
+        } else {
+          // Si la IA no respondió (modo manual o solo_faq), informar al usuario
+          console.log(`ℹ️ [${new Date().toLocaleTimeString()}] IA no responde (modo actual)\n`);
+        }
       } catch (error) {
         console.error("❌ Error al procesar mensaje:", error.message);
       }
@@ -301,3 +422,7 @@ wppconnect
     console.error("Detalles:", error);
     process.exit(1);
   });
+}
+
+// Iniciar el bot
+iniciarBot();

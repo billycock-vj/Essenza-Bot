@@ -106,19 +106,27 @@ function esAdministrador(userId) {
  * @returns {string} - Mensaje formateado con estadísticas
  */
 function obtenerEstadisticas(estadisticas) {
+  // Manejar casos donde estadisticas puede no tener todas las propiedades
+  const usuariosAtendidos = estadisticas.usuariosAtendidos 
+    ? (estadisticas.usuariosAtendidos.size || estadisticas.usuariosAtendidos || 0)
+    : (estadisticas.usuariosActivos || 0);
+  const totalMensajes = estadisticas.totalMensajes || 0;
+  const reservasSolicitadas = estadisticas.reservasSolicitadas || estadisticas.totalReservas || 0;
+  const asesoresActivados = estadisticas.asesoresActivados || 0;
+  const inicio = estadisticas.inicio ? new Date(estadisticas.inicio) : new Date();
   const diasActivo = Math.floor(
-    (new Date() - estadisticas.inicio) / (1000 * 60 * 60 * 24)
+    (new Date() - inicio) / (1000 * 60 * 60 * 24)
   );
   return `
 📊 *ESTADÍSTICAS DEL BOT*
 
-👥 *Usuarios únicos atendidos:* ${estadisticas.usuariosAtendidos.size}
-💬 *Total de mensajes procesados:* ${estadisticas.totalMensajes}
-📅 *Reservas solicitadas:* ${estadisticas.reservasSolicitadas}
-🧑‍💼 *Modos asesor activados:* ${estadisticas.asesoresActivados}
+👥 *Usuarios únicos atendidos:* ${usuariosAtendidos}
+💬 *Total de mensajes procesados:* ${totalMensajes}
+📅 *Reservas solicitadas:* ${reservasSolicitadas}
+🧑‍💼 *Modos asesor activados:* ${asesoresActivados}
 ⏰ *Días activo:* ${diasActivo}
 📈 *Promedio mensajes/día:* ${
-    diasActivo > 0 ? Math.round(estadisticas.totalMensajes / diasActivo) : 0
+    diasActivo > 0 ? Math.round(totalMensajes / diasActivo) : 0
   }
   `.trim();
 }
@@ -406,108 +414,29 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
     return true;
   }
 
-  // Comandos de IA (más específicos)
-  const textoTrimIA = textLower.trim();
-  const esDesactivarIA = 
-    textoTrimIA === "desactivar ia" ||
-    textoTrimIA === "desactivar ai" ||
-    textoTrimIA === "ia off" ||
-    textoTrimIA === "ai off" ||
-    textoTrimIA === "desactivar inteligencia artificial";
-  
-  const esActivarIA = 
-    textoTrimIA === "activar ia" ||
-    textoTrimIA === "activar ai" ||
-    textoTrimIA === "ia on" ||
-    textoTrimIA === "ai on" ||
-    textoTrimIA === "activar inteligencia artificial";
-  
-  if (esDesactivarIA) {
-    console.log(`\n✅ ✅ ✅ COMANDO "DESACTIVAR IA" DETECTADO - EJECUTANDO... ✅ ✅ ✅\n`);
-    iaGlobalDesactivada.value = true;
-    try {
-      await db.establecerConfiguracion('flag_ia_activada', '0', 'IA desactivada globalmente');
-      await enviarMensajeSeguro(
-        client,
-        userId,
-        "✅ *IA Desactivada*\n\nLa inteligencia artificial ha sido desactivada globalmente.\n\nEl bot seguirá funcionando pero sin respuestas de IA.\n\nPara reactivarla, escribe: *Activar IA*"
-      );
-      logMessage("INFO", "IA desactivada globalmente por el administrador");
-      console.log(`\n✅ IA DESACTIVADA CORRECTAMENTE\n`);
-    } catch (error) {
-      logMessage("ERROR", "Error al desactivar IA", {
-        error: error.message,
-      });
-    }
-    return true;
-  }
-  
-  if (esActivarIA) {
-    console.log(`\n✅ ✅ ✅ COMANDO "ACTIVAR IA" DETECTADO - EJECUTANDO... ✅ ✅ ✅\n`);
-    iaGlobalDesactivada.value = false;
-    try {
-      await db.establecerConfiguracion('flag_ia_activada', '1', 'IA activada globalmente');
-      await enviarMensajeSeguro(
-        client,
-        userId,
-        "✅ *IA Activada*\n\nLa inteligencia artificial ha sido reactivada globalmente.\n\nEl bot ahora puede usar IA para responder a los usuarios."
-      );
-      logMessage("INFO", "IA reactivada globalmente por el administrador");
-      console.log(`\n✅ IA ACTIVADA CORRECTAMENTE\n`);
-    } catch (error) {
-      logMessage("ERROR", "Error al activar IA", {
-        error: error.message,
-      });
-    }
-    return true;
-  }
-
-  // Comando: Estado de IA
-  if (
-    textLower === "estado ia" ||
-    textLower === "estado de la ia" ||
-    textLower === "ia estado"
-  ) {
-    const estadoIA = iaGlobalDesactivada.value
-      ? "❌ Desactivada"
-      : "✅ Activada";
-    try {
-      await enviarMensajeSeguro(
-        client,
-        userId,
-        `📊 *Estado de la IA*\n\n${estadoIA}\n\nPara cambiar el estado:\n• *Desactivar IA* - Desactiva la IA globalmente\n• *Activar IA* - Reactiva la IA globalmente`
-      );
-      if (config.LOG_LEVEL === 'verbose') {
-        logMessage("INFO", "Estado de IA consultado por el administrador");
-      }
-    } catch (error) {
-      logMessage("ERROR", "Error al consultar estado de IA", {
-        error: error.message,
-      });
-    }
-    return true;
-  }
-
-  // Comandos de Bot
+  // Comandos de Bot (controla tanto bot como IA)
+  const textoTrimBot = textLower.trim();
   const esDesactivarBot = 
-    textoTrimIA === "desactivar bot" ||
-    textoTrimIA === "bot off";
+    textoTrimBot === "desactivar bot" ||
+    textoTrimBot === "bot off";
   
   const esActivarBot = 
-    textoTrimIA === "activar bot" ||
-    textoTrimIA === "bot on";
+    textoTrimBot === "activar bot" ||
+    textoTrimBot === "bot on";
 
-  // Comando: Desactivar bot (solo global, sin número)
+  // Comando: Desactivar bot (desactiva bot e IA completamente)
   if (esDesactivarBot) {
-    if (textoTrimIA === "desactivar bot" || textoTrimIA === "bot off") {
+    if (textoTrimBot === "desactivar bot" || textoTrimBot === "bot off") {
       try {
+        // Desactivar tanto el bot como la IA
         await db.establecerConfiguracion('flag_bot_activo', '0', 'Bot desactivado globalmente');
+        await db.establecerConfiguracion('flag_ia_activada', '0', 'IA desactivada junto con el bot');
         await enviarMensajeSeguro(
           client,
           userId,
-          "✅ *Bot Desactivado Globalmente*\n\nEl bot ha sido desactivado completamente.\n\nTodos los mensajes serán ignorados hasta que reactives el bot.\n\nPara reactivarlo, escribe: *Activar bot*"
+          "✅ *Bot Desactivado Completamente*\n\nEl bot y la IA han sido desactivados globalmente.\n\nTodos los mensajes serán ignorados hasta que reactives el bot.\n\nPara reactivarlo, escribe: *Activar bot*"
         );
-        logMessage("INFO", "Bot desactivado globalmente por administrador", {
+        logMessage("INFO", "Bot y IA desactivados globalmente por administrador", {
           adminId: extraerNumero(userId)
         });
       } catch (error) {
@@ -522,21 +451,21 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
       }
       return true;
     }
-    // Si empieza con "desactivar bot" pero no es exacto, mostrar lista de comandos
-    // (el comando con número fue eliminado)
   }
 
-  // Comando: Activar bot (solo global, sin número)
+  // Comando: Activar bot (activa bot e IA completamente)
   if (esActivarBot) {
-    if (textoTrimIA === "activar bot" || textoTrimIA === "bot on") {
+    if (textoTrimBot === "activar bot" || textoTrimBot === "bot on") {
       try {
+        // Activar tanto el bot como la IA
         await db.establecerConfiguracion('flag_bot_activo', '1', 'Bot activado globalmente');
+        await db.establecerConfiguracion('flag_ia_activada', '1', 'IA activada junto con el bot');
         await enviarMensajeSeguro(
           client,
           userId,
-          "✅ *Bot Activado Globalmente*\n\nEl bot ha sido reactivado completamente.\n\nAhora puede procesar todos los mensajes normalmente."
+          "✅ *Bot Activado Completamente*\n\nEl bot y la IA han sido reactivados globalmente.\n\nAhora puede procesar todos los mensajes y responder con IA normalmente."
         );
-        logMessage("INFO", "Bot activado globalmente por administrador", {
+        logMessage("INFO", "Bot y IA activados globalmente por administrador", {
           adminId: extraerNumero(userId)
         });
       } catch (error) {
@@ -551,8 +480,6 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
       }
       return true;
     }
-    // Si empieza con "activar bot" pero no es exacto, mostrar lista de comandos
-    // (el comando con número fue eliminado)
   }
 
   // ============================================
@@ -958,12 +885,9 @@ async function mostrarListaComandos(client, userId) {
     `• detalle cita [id] - Ver detalles de una cita\n` +
     `• 📷 Enviar imagen - Crear cita desde imagen\n\n` +
     `🤖 *CONTROL DEL BOT*\n` +
-    `• activar bot / bot on - Activar bot globalmente\n` +
-    `• desactivar bot / bot off - Desactivar bot globalmente\n\n` +
-    `🤖 *CONTROL DE IA*\n` +
-    `• activar ia - Activar IA globalmente\n` +
-    `• desactivar ia - Desactivar IA globalmente\n` +
-    `• estado ia - Ver estado de la IA\n` +
+    `• activar bot / bot on - Activar bot completamente (bot + IA)\n` +
+    `• desactivar bot / bot off - Desactivar bot completamente (bot + IA)\n\n` +
+    `🤖 *CONFIGURACIÓN DE IA*\n` +
     `• ia modo [auto|manual|solo_faq] - Cambiar modo de IA\n` +
     `• ia limite [n] - Establecer límite diario de IA (1-100)\n\n` +
     `📋 *GESTIÓN DE SERVICIOS*\n` +

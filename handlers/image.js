@@ -200,6 +200,13 @@ async function crearCitaCompleta(client, userIdAdmin, datosCita) {
       }
     }
     
+    // Validar horario de atención usando validators
+    const { validarFecha } = require('../utils/validators');
+    const validacionFecha = validarFecha(fechaHora, duracion);
+    if (!validacionFecha.valida) {
+      throw new Error(validacionFecha.error || 'Fecha/hora fuera del horario de atención');
+    }
+    
     // Formatear userId del cliente
     let userIdCliente = datosCita.telefonoCliente;
     if (!userIdCliente) {

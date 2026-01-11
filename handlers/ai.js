@@ -92,23 +92,16 @@ Ubicación: Jiron Ricardo Palma 603, Puente Piedra, Lima, Perú
 Mapa: ${MAPS_LINK} (mantener como link clicable)
 
 Horario de atención:
-- Lunes a Jueves: 11:00 - 19:00
-- Viernes: 11:00 - 19:00
-- Sábado: 10:00 - 16:00
-- Domingo: Cerrado
+- Lunes a Domingo: 11:00 AM - 6:00 PM
 
 IMPORTANTE - HORARIO ESPECÍFICO POR DÍA:
 Cuando el usuario mencione "mañana", "hoy", o una fecha específica, DEBES verificar qué día de la semana es y dar el horario CORRECTO de ese día:
-- Si es Lunes, Martes, Miércoles o Jueves: 11:00 - 19:00
-- Si es Viernes: 11:00 - 19:00
-- Si es Sábado: 10:00 - 16:00
-- Si es Domingo: Cerrado (no hay atención)
+- Todos los días (Lunes a Domingo): 11:00 AM - 6:00 PM
 
 MÉTODOS DE PAGO Y DEPÓSITO
 
 Depósito obligatorio para reservar:
-- Si el servicio cuesta menos de 50 soles: depósito 10
-- Si el servicio cuesta 50 o más: depósito 20
+- Todos los servicios: depósito de S/20
 
 Métodos de pago:
 - Yape ${YAPE_NUMERO} (Titular Esther Ocaña Baron)

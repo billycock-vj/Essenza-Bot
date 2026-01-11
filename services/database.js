@@ -109,15 +109,18 @@ async function inicializarDB() {
                 return;
               }
               
-              // Tabla de usuarios_bloqueados
+              // Tabla de paquetes
               db.run(`
-                CREATE TABLE IF NOT EXISTS usuarios_bloqueados (
+                CREATE TABLE IF NOT EXISTS paquetes (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  telefono TEXT NOT NULL UNIQUE,
-                  motivo TEXT,
-                  fecha_bloqueo TEXT NOT NULL,
-                  bloqueado_por TEXT,
-                  activo INTEGER DEFAULT 1 CHECK(activo IN (0, 1))
+                  nombre TEXT NOT NULL UNIQUE,
+                  precio REAL NOT NULL,
+                  cantidad_personas INTEGER DEFAULT 1,
+                  descripcion TEXT,
+                  servicios_incluidos TEXT,
+                  activo INTEGER DEFAULT 1 CHECK(activo IN (0, 1)),
+                  creado TEXT NOT NULL,
+                  actualizado TEXT NOT NULL
                 )
               `, (err) => {
                 if (err) {
@@ -125,14 +128,15 @@ async function inicializarDB() {
                   return;
                 }
                 
-                // Tabla de interacciones_ia
+                // Tabla de usuarios_bloqueados
                 db.run(`
-                  CREATE TABLE IF NOT EXISTS interacciones_ia (
+                  CREATE TABLE IF NOT EXISTS usuarios_bloqueados (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    userId TEXT NOT NULL,
-                    fecha TEXT NOT NULL,
-                    cantidad INTEGER DEFAULT 1,
-                    UNIQUE(userId, fecha)
+                    telefono TEXT NOT NULL UNIQUE,
+                    motivo TEXT,
+                    fecha_bloqueo TEXT NOT NULL,
+                    bloqueado_por TEXT,
+                    activo INTEGER DEFAULT 1 CHECK(activo IN (0, 1))
                   )
                 `, (err) => {
                   if (err) {
@@ -140,19 +144,14 @@ async function inicializarDB() {
                     return;
                   }
                   
-                  // Tabla de clientes (actualizada con session_id y phone)
+                  // Tabla de interacciones_ia
                   db.run(`
-                    CREATE TABLE IF NOT EXISTS clientes (
+                    CREATE TABLE IF NOT EXISTS interacciones_ia (
                       id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      session_id TEXT NOT NULL UNIQUE,
-                      phone TEXT,
-                      country TEXT,
-                      nombre TEXT,
-                      fecha_creacion TEXT NOT NULL,
-                      notas TEXT,
-                      total_reservas INTEGER DEFAULT 0,
-                      reservas_canceladas INTEGER DEFAULT 0,
-                      ultima_reserva TEXT
+                      userId TEXT NOT NULL,
+                      fecha TEXT NOT NULL,
+                      cantidad INTEGER DEFAULT 1,
+                      UNIQUE(userId, fecha)
                     )
                   `, (err) => {
                     if (err) {
@@ -160,15 +159,19 @@ async function inicializarDB() {
                       return;
                     }
                     
-                    // Tabla de logs
+                    // Tabla de clientes (actualizada con session_id y phone)
                     db.run(`
-                      CREATE TABLE IF NOT EXISTS logs (
+                      CREATE TABLE IF NOT EXISTS clientes (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        nivel TEXT NOT NULL,
-                        mensaje TEXT NOT NULL,
-                        datos TEXT,
-                        userId TEXT,
-                        timestamp TEXT NOT NULL
+                        session_id TEXT NOT NULL UNIQUE,
+                        phone TEXT,
+                        country TEXT,
+                        nombre TEXT,
+                        fecha_creacion TEXT NOT NULL,
+                        notas TEXT,
+                        total_reservas INTEGER DEFAULT 0,
+                        reservas_canceladas INTEGER DEFAULT 0,
+                        ultima_reserva TEXT
                       )
                     `, (err) => {
                       if (err) {
@@ -176,61 +179,65 @@ async function inicializarDB() {
                         return;
                       }
                       
-                              // Crear índices para búsquedas rápidas (solo si las columnas existen)
-                      // Nota: Los índices se crearán después de la migración si es necesario
+                      // Tabla de logs
                       db.run(`
-                        CREATE INDEX IF NOT EXISTS idx_fechaHora ON reservas(fechaHora)
+                        CREATE TABLE IF NOT EXISTS logs (
+                          id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          nivel TEXT NOT NULL,
+                          mensaje TEXT NOT NULL,
+                          datos TEXT,
+                          userId TEXT,
+                          timestamp TEXT NOT NULL
+                        )
                       `, (err) => {
-                        // Ignorar errores de índices si las columnas no existen aún
-                        if (err && err.message && err.message.includes('no such column')) {
-                          console.log('⚠️  Índice no creado (columna no existe aún, se creará después de migración)');
-                        } else if (err) {
-                          reject(err);
-                          return;
-                        }
                         if (err) {
                           reject(err);
                           return;
                         }
                         
+                        // Crear índices para búsquedas rápidas (solo si las columnas existen)
+                        // Nota: Los índices se crearán después de la migración si es necesario
                         db.run(`
-                          CREATE INDEX IF NOT EXISTS idx_userId ON reservas(userId)
+                          CREATE INDEX IF NOT EXISTS idx_fechaHora ON reservas(fechaHora)
                         `, (err) => {
-                          if (err) {
+                          // Ignorar errores de índices si las columnas no existen aún
+                          if (err && err.message && err.message.includes('no such column')) {
+                            console.log('⚠️  Índice no creado (columna no existe aún, se creará después de migración)');
+                          } else if (err) {
                             reject(err);
                             return;
                           }
                           
                           db.run(`
-                            CREATE INDEX IF NOT EXISTS idx_estado ON reservas(estado)
+                            CREATE INDEX IF NOT EXISTS idx_userId ON reservas(userId)
                           `, (err) => {
                             if (err) {
                               reject(err);
                               return;
                             }
                             
-                            // Crear índice de servicio_id solo si la columna existe
                             db.run(`
-                              CREATE INDEX IF NOT EXISTS idx_reservas_servicio_id ON reservas(servicio_id)
+                              CREATE INDEX IF NOT EXISTS idx_estado ON reservas(estado)
                             `, (err) => {
-                              // Ignorar si la columna no existe (se agregará en migración)
-                              if (err && err.message && err.message.includes('no such column')) {
-                                // Continuar sin error
-                              } else if (err) {
+                              if (err) {
                                 reject(err);
                                 return;
                               }
                               
+                              // Crear índice de servicio_id solo si la columna existe
                               db.run(`
-                                CREATE INDEX IF NOT EXISTS idx_usuarios_bloqueados_telefono ON usuarios_bloqueados(telefono)
+                                CREATE INDEX IF NOT EXISTS idx_reservas_servicio_id ON reservas(servicio_id)
                               `, (err) => {
-                                if (err) {
+                                // Ignorar si la columna no existe (se agregará en migración)
+                                if (err && err.message && err.message.includes('no such column')) {
+                                  // Continuar sin error
+                                } else if (err) {
                                   reject(err);
                                   return;
                                 }
                                 
                                 db.run(`
-                                  CREATE INDEX IF NOT EXISTS idx_usuarios_bloqueados_activo ON usuarios_bloqueados(activo)
+                                  CREATE INDEX IF NOT EXISTS idx_usuarios_bloqueados_telefono ON usuarios_bloqueados(telefono)
                                 `, (err) => {
                                   if (err) {
                                     reject(err);
@@ -238,7 +245,7 @@ async function inicializarDB() {
                                   }
                                   
                                   db.run(`
-                                    CREATE INDEX IF NOT EXISTS idx_interacciones_ia_userId ON interacciones_ia(userId)
+                                    CREATE INDEX IF NOT EXISTS idx_usuarios_bloqueados_activo ON usuarios_bloqueados(activo)
                                   `, (err) => {
                                     if (err) {
                                       reject(err);
@@ -246,67 +253,85 @@ async function inicializarDB() {
                                     }
                                     
                                     db.run(`
-                                      CREATE INDEX IF NOT EXISTS idx_interacciones_ia_fecha ON interacciones_ia(fecha)
+                                      CREATE INDEX IF NOT EXISTS idx_interacciones_ia_userId ON interacciones_ia(userId)
                                     `, (err) => {
                                       if (err) {
                                         reject(err);
                                         return;
                                       }
                                       
-                                      // Crear índices para las nuevas columnas (session_id y phone)
                                       db.run(`
-                                        CREATE INDEX IF NOT EXISTS idx_clientes_session_id ON clientes(session_id)
+                                        CREATE INDEX IF NOT EXISTS idx_interacciones_ia_fecha ON interacciones_ia(fecha)
                                       `, (err) => {
-                                        // Ignorar errores si la columna no existe aún (se agregará en migración)
-                                        if (err && err.message && err.message.includes('no such column')) {
-                                          // Continuar sin error
-                                        } else if (err) {
-                                          reject(err);
-                                          return;
-                                        }
-                                      });
-                                      
-                                      db.run(`
-                                        CREATE INDEX IF NOT EXISTS idx_clientes_phone ON clientes(phone)
-                                      `, (err) => {
-                                        // Ignorar errores si la columna no existe aún
-                                        if (err && err.message && err.message.includes('no such column')) {
-                                          // Continuar sin error
-                                        } else if (err) {
+                                        if (err) {
                                           reject(err);
                                           return;
                                         }
                                         
+                                        // Crear índices para las nuevas columnas (session_id y phone)
                                         db.run(`
-                                          CREATE INDEX IF NOT EXISTS idx_servicios_activo ON servicios(activo)
+                                          CREATE INDEX IF NOT EXISTS idx_clientes_session_id ON clientes(session_id)
                                         `, (err) => {
-                                          if (err) {
+                                          // Ignorar errores si la columna no existe aún (se agregará en migración)
+                                          if (err && err.message && err.message.includes('no such column')) {
+                                            // Continuar sin error
+                                          } else if (err) {
                                             reject(err);
                                             return;
                                           }
                                           
                                           db.run(`
-                                            CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)
+                                            CREATE INDEX IF NOT EXISTS idx_clientes_phone ON clientes(phone)
                                           `, (err) => {
-                                            if (err) {
+                                            // Ignorar errores si la columna no existe aún
+                                            if (err && err.message && err.message.includes('no such column')) {
+                                              // Continuar sin error
+                                            } else if (err) {
                                               reject(err);
                                               return;
                                             }
                                             
                                             db.run(`
-                                              CREATE INDEX IF NOT EXISTS idx_logs_nivel ON logs(nivel)
+                                              CREATE INDEX IF NOT EXISTS idx_servicios_activo ON servicios(activo)
                                             `, (err) => {
                                               if (err) {
                                                 reject(err);
                                                 return;
                                               }
                                               
-                                              db.close((err) => {
+                                              db.run(`
+                                                CREATE INDEX IF NOT EXISTS idx_paquetes_activo ON paquetes(activo)
+                                              `, (err) => {
                                                 if (err) {
                                                   reject(err);
-                                                } else {
-                                                  resolve();
+                                                  return;
                                                 }
+                                                
+                                                db.run(`
+                                                  CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)
+                                                `, (err) => {
+                                                  if (err) {
+                                                    reject(err);
+                                                    return;
+                                                  }
+                                                  
+                                                  db.run(`
+                                                    CREATE INDEX IF NOT EXISTS idx_logs_nivel ON logs(nivel)
+                                                  `, (err) => {
+                                                    if (err) {
+                                                      reject(err);
+                                                      return;
+                                                    }
+                                                    
+                                                    db.close((err) => {
+                                                      if (err) {
+                                                        reject(err);
+                                                      } else {
+                                                        resolve();
+                                                      }
+                                                    });
+                                                  });
+                                                });
                                               });
                                             });
                                           });
@@ -1182,6 +1207,46 @@ async function agregarServicio(nombre, duracion, precio, categoria = null, descr
 }
 
 /**
+ * Lista todos los paquetes activos
+ * @returns {Promise<Array>}
+ */
+async function listarPaquetes() {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.all('SELECT * FROM paquetes WHERE activo = 1 ORDER BY precio', (err, rows) => {
+      db.close();
+      if (err) reject(err);
+      else resolve(rows);
+    });
+  });
+}
+
+/**
+ * Agrega un nuevo paquete
+ * @param {string} nombre - Nombre del paquete
+ * @param {number} precio - Precio
+ * @param {number} cantidadPersonas - Cantidad de personas (1 o 2)
+ * @param {string} descripcion - Descripción
+ * @param {string} serviciosIncluidos - Servicios incluidos
+ * @returns {Promise<number>} - ID del paquete creado
+ */
+async function agregarPaquete(nombre, precio, cantidadPersonas = 1, descripcion = null, serviciosIncluidos = null) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const ahora = new Date().toISOString();
+    db.run(
+      'INSERT INTO paquetes (nombre, precio, cantidad_personas, descripcion, servicios_incluidos, activo, creado, actualizado) VALUES (?, ?, ?, ?, ?, 1, ?, ?)',
+      [nombre, precio, cantidadPersonas, descripcion, serviciosIncluidos, ahora, ahora],
+      function(err) {
+        db.close();
+        if (err) reject(err);
+        else resolve(this.lastID);
+      }
+    );
+  });
+}
+
+/**
  * Desactiva un servicio
  * @param {number} id - ID del servicio
  * @returns {Promise<boolean>}
@@ -1946,6 +2011,8 @@ module.exports = {
   agregarServicio,
   desactivarServicio,
   obtenerServicioPorId,
+  listarPaquetes,
+  agregarPaquete,
   bloquearUsuario,
   desbloquearUsuario,
   estaUsuarioBloqueado,

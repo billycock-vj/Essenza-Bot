@@ -9,10 +9,10 @@ const fs = require('fs');
 const IS_FLY_IO = process.env.FLY_APP_NAME !== undefined || fs.existsSync('/data');
 
 // Directorio base para datos persistentes
-const DATA_BASE_DIR = IS_FLY_IO ? '/data' : path.join(__dirname, '..', 'data-storage');
+const DATA_BASE_DIR = IS_FLY_IO ? '/data' : 'C:\\apps\\essenza-bot\\data';
 
 // Directorio base para tokens de WhatsApp
-const TOKENS_BASE_DIR = IS_FLY_IO ? '/data/tokens' : path.join(__dirname, '..', 'tokens');
+const TOKENS_BASE_DIR = IS_FLY_IO ? '/data/tokens' : 'C:\\apps\\essenza-bot\\tokens';
 
 // Directorio base para logs
 const LOGS_BASE_DIR = IS_FLY_IO ? '/data/logs' : path.join(__dirname, '..', 'logs');
@@ -53,7 +53,7 @@ module.exports = {
   TOKENS_BASE_DIR,
   LOGS_BASE_DIR,
   // Rutas específicas
-  DB_PATH: path.join(DATA_BASE_DIR, 'reservas.db'),
+  DB_PATH: IS_FLY_IO ? path.join(DATA_BASE_DIR, 'reservas.db') : 'C:\\apps\\essenza-bot\\data\\reservas.db',
   RESERVAS_FILE: path.join(DATA_BASE_DIR, 'reservas.json'),
   USER_DATA_FILE: path.join(DATA_BASE_DIR, 'user-data.json'),
   ESTADISTICAS_FILE: path.join(DATA_BASE_DIR, 'estadisticas.json'),

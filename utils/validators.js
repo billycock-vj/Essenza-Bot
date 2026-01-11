@@ -24,13 +24,13 @@ function validarFormatoUserId(userId) {
 function obtenerHorarioDelDia(fecha) {
   const diaSemana = fecha.getDay(); // 0 = Domingo, 1 = Lunes, ..., 6 = Sábado
   const horarios = {
-    0: { abierto: false, mensaje: "Domingo: Cerrado" }, // Domingo
-    1: { abierto: true, apertura: 11, cierre: 19 }, // Lunes
-    2: { abierto: true, apertura: 11, cierre: 19 }, // Martes
-    3: { abierto: true, apertura: 11, cierre: 19 }, // Miércoles
-    4: { abierto: true, apertura: 11, cierre: 19 }, // Jueves
-    5: { abierto: true, apertura: 11, cierre: 19 }, // Viernes
-    6: { abierto: true, apertura: 10, cierre: 16 }, // Sábado
+    0: { abierto: true, apertura: 11, cierre: 18 }, // Domingo - 11:00 AM - 6:00 PM
+    1: { abierto: true, apertura: 11, cierre: 18 }, // Lunes - 11:00 AM - 6:00 PM
+    2: { abierto: true, apertura: 11, cierre: 18 }, // Martes - 11:00 AM - 6:00 PM
+    3: { abierto: true, apertura: 11, cierre: 18 }, // Miércoles - 11:00 AM - 6:00 PM
+    4: { abierto: true, apertura: 11, cierre: 18 }, // Jueves - 11:00 AM - 6:00 PM
+    5: { abierto: true, apertura: 11, cierre: 18 }, // Viernes - 11:00 AM - 6:00 PM
+    6: { abierto: true, apertura: 11, cierre: 18 }, // Sábado - 11:00 AM - 6:00 PM
   };
   
   return horarios[diaSemana] || { abierto: false, mensaje: "Día no disponible" };
