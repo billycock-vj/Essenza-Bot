@@ -1,27 +1,23 @@
 {
-  "name": "whatsapp-bot",
-  "version": "1.0.0",
-  "description": "Bot de WhatsApp con whatsapp-web.js",
+  "name": "essenza-bot",
+  "version": "2.0.0",
+  "description": "Bot simplificado de WhatsApp para Essenza Spa - Solo IA",
   "main": "main.js",
   "scripts": {
-    "prestart": "npm install",
-    "start": "node main.js",
-    "test": "jest",
-    "logs:railway": "railway logs",
-    "logs:export": "railway logs > railway-logs-$(date +%Y%m%d-%H%M%S).txt"
+    "start": "node main.js"
   },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "essenza",
+    "spa",
+    "openai"
+  ],
   "author": "",
   "license": "ISC",
-  "keywords": [],
   "dependencies": {
     "@wppconnect-team/wppconnect": "^1.37.8",
     "dotenv": "^16.4.7",
-    "openai": "^6.9.1",
-    "p-queue": "^9.0.1",
-    "qrcode-terminal": "^0.12.0",
-    "sqlite3": "^5.1.7"
-  },
-  "devDependencies": {
-    "jest": "^29.7.0"
+    "openai": "^6.9.1"
   }
 }

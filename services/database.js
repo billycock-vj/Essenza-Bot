@@ -2,9 +2,10 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
+const paths = require('../config/paths');
 
-const DB_DIR = path.join(__dirname, '..', 'data-storage');
-const DB_PATH = path.join(DB_DIR, 'reservas.db');
+const DB_DIR = paths.DATA_BASE_DIR;
+const DB_PATH = paths.DB_PATH;
 
 // Asegurar que el directorio existe
 if (!fs.existsSync(DB_DIR)) {
@@ -252,10 +253,26 @@ async function inicializarDB() {
                                         return;
                                       }
                                       
+                                      // Crear índices para las nuevas columnas (session_id y phone)
                                       db.run(`
-                                        CREATE INDEX IF NOT EXISTS idx_clientes_telefono ON clientes(telefono)
+                                        CREATE INDEX IF NOT EXISTS idx_clientes_session_id ON clientes(session_id)
                                       `, (err) => {
-                                        if (err) {
+                                        // Ignorar errores si la columna no existe aún (se agregará en migración)
+                                        if (err && err.message && err.message.includes('no such column')) {
+                                          // Continuar sin error
+                                        } else if (err) {
+                                          reject(err);
+                                          return;
+                                        }
+                                      });
+                                      
+                                      db.run(`
+                                        CREATE INDEX IF NOT EXISTS idx_clientes_phone ON clientes(phone)
+                                      `, (err) => {
+                                        // Ignorar errores si la columna no existe aún
+                                        if (err && err.message && err.message.includes('no such column')) {
+                                          // Continuar sin error
+                                        } else if (err) {
                                           reject(err);
                                           return;
                                         }
@@ -1546,16 +1563,17 @@ async function obtenerHistorialCliente(telefono) {
 
 /**
  * Actualiza notas de un cliente
- * @param {string} telefono - Número de teléfono
+ * @param {string} phone - Número de teléfono (phone) o session_id
  * @param {string} notas - Notas a agregar
  * @returns {Promise<boolean>}
  */
-async function actualizarNotasCliente(telefono, notas) {
+async function actualizarNotasCliente(phone, notas) {
   const db = await abrirDB();
   return new Promise((resolve, reject) => {
+    // Intentar actualizar por phone primero, luego por session_id
     db.run(
-      'UPDATE clientes SET notas = ? WHERE telefono = ?',
-      [notas, telefono],
+      'UPDATE clientes SET notas = ? WHERE phone = ? OR session_id = ?',
+      [notas, phone, phone],
       function(err) {
         db.close();
         if (err) reject(err);
@@ -1754,10 +1772,11 @@ async function migrarBaseDatos() {
       
       // Migrar tabla clientes: agregar session_id, phone, country
       // Primero verificar si existe la columna telefono (versión antigua)
-      db.get("PRAGMA table_info(clientes)", (err, rows) => {
+      db.all("PRAGMA table_info(clientes)", (err, rows) => {
         if (err) {
           console.log("⚠️  Error al verificar estructura de clientes:", err.message);
-        } else {
+          // Continuar con el resto de la migración aunque haya error
+        } else if (rows && Array.isArray(rows) && rows.length > 0) {
           const columnas = rows.map(r => r.name);
           const tieneTelefono = columnas.includes('telefono');
           const tieneSessionId = columnas.includes('session_id');
@@ -1797,6 +1816,7 @@ async function migrarBaseDatos() {
             db.run('ALTER TABLE clientes ADD COLUMN country TEXT', () => {});
           }
         }
+        // Continuar con el resto de la migración (no cerrar DB aquí)
       });
       
       // Crear tabla servicios
@@ -1852,11 +1872,13 @@ async function migrarBaseDatos() {
               return;
             }
             
-            // Crear tabla clientes
+            // Crear tabla clientes (nueva estructura con session_id y phone)
             db.run(`
               CREATE TABLE IF NOT EXISTS clientes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telefono TEXT NOT NULL UNIQUE,
+                session_id TEXT NOT NULL UNIQUE,
+                phone TEXT,
+                country TEXT,
                 nombre TEXT,
                 fecha_creacion TEXT NOT NULL,
                 notas TEXT,
@@ -1876,7 +1898,9 @@ async function migrarBaseDatos() {
               db.run('CREATE INDEX IF NOT EXISTS idx_usuarios_bloqueados_activo ON usuarios_bloqueados(activo)', () => {});
               db.run('CREATE INDEX IF NOT EXISTS idx_interacciones_ia_userId ON interacciones_ia(userId)', () => {});
               db.run('CREATE INDEX IF NOT EXISTS idx_interacciones_ia_fecha ON interacciones_ia(fecha)', () => {});
-              db.run('CREATE INDEX IF NOT EXISTS idx_clientes_telefono ON clientes(telefono)', () => {});
+              // Índices para clientes (nuevas columnas)
+              db.run('CREATE INDEX IF NOT EXISTS idx_clientes_session_id ON clientes(session_id)', () => {});
+              db.run('CREATE INDEX IF NOT EXISTS idx_clientes_phone ON clientes(phone)', () => {});
               db.run('CREATE INDEX IF NOT EXISTS idx_servicios_activo ON servicios(activo)', () => {});
               
               // Agregar valores por defecto a configuracion

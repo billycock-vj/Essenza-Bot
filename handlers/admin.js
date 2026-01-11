@@ -310,80 +310,7 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
     return true;
   }
 
-  // Comando: Resetear sesión de usuario
-  if (textoTrimReservas.startsWith("reset ")) {
-    try {
-      // Extraer número del comando (acepta cualquier formato)
-      const numeroMatch = text.match(/reset\s+(\+?\d{9,12})/i);
-      if (!numeroMatch) {
-        await enviarMensajeSeguro(
-          client,
-          userId,
-          "❌ Formato incorrecto.\n\nUso: `reset [número]`\n\nEjemplo: `reset 972002363` o `reset 51972002363`"
-        );
-        return true;
-      }
-      
-      // Normalizar el número al formato estándar 51XXXXXXXXX
-      const numeroNormalizado = normalizarTelefono(numeroMatch[1]);
-      if (!numeroNormalizado) {
-        await enviarMensajeSeguro(
-          client,
-          userId,
-          "❌ Número de teléfono inválido.\n\nEl número debe tener entre 9 y 12 dígitos."
-        );
-        return true;
-      }
-      
-      const numeroUsuario = numeroNormalizado + '@c.us';
-      
-      // Limpiar TODO el estado del usuario
-      storage.setUserState(numeroUsuario, null);
-      storage.setHumanMode(numeroUsuario, false);
-      storage.setBotDesactivado(numeroUsuario, false);
-      
-      // Limpiar historial de conversación
-      storage.setHistorial(numeroUsuario, []);
-      
-      // Limpiar datos de usuario completamente
-      const userData = {};
-      userData.iaDesactivada = false;
-      userData.botDesactivadoPorAdmin = false;
-      userData.modoReservaDesde = null;
-      userData.saludoEnviado = false;
-      userData.bienvenidaEnviada = false;
-      userData.ultimaInteraccion = null;
-      storage.setUserData(numeroUsuario, userData);
-      
-      // También verificar y desbloquear en la base de datos si está bloqueado
-      try {
-        await db.desbloquearUsuario(numeroNormalizado);
-      } catch (error) {
-        // No crítico si falla
-        logMessage("WARNING", "Error al verificar bloqueo en BD (no crítico)", { error: error.message });
-      }
-      
-      await enviarMensajeSeguro(
-        client,
-        userId,
-        `✅ *Sesión reseteada*\n\nSe ha reseteado la sesión para:\n📱 ${extraerNumero(numeroUsuario)}\n\nEl usuario puede volver a interactuar normalmente con el bot.`
-      );
-      logMessage("INFO", "Sesión de usuario reseteada por administrador", {
-        userId: numeroUsuario,
-        adminId: extraerNumero(userId)
-      });
-    } catch (error) {
-      logMessage("ERROR", "Error al resetear sesión", {
-        error: error.message,
-      });
-      await enviarMensajeSeguro(
-        client,
-        userId,
-        "❌ Error al resetear la sesión. Por favor, verifica el número e intenta nuevamente."
-      );
-    }
-    return true;
-  }
+  // Comando reset [numero] eliminado - el payload no proporciona números reales
 
   // Comando: Citas de fecha específica
   // Formato: citas_dd/MM/yyyy (ejemplo: citas_03/01/2025)
@@ -564,17 +491,14 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
   // Comandos de Bot
   const esDesactivarBot = 
     textoTrimIA === "desactivar bot" ||
-    textoTrimIA.startsWith("desactivar bot ") ||
     textoTrimIA === "bot off";
   
   const esActivarBot = 
     textoTrimIA === "activar bot" ||
-    textoTrimIA.startsWith("activar bot ") ||
     textoTrimIA === "bot on";
 
-  // Comando: Desactivar bot
+  // Comando: Desactivar bot (solo global, sin número)
   if (esDesactivarBot) {
-    // Verificar si es comando global (sin número)
     if (textoTrimIA === "desactivar bot" || textoTrimIA === "bot off") {
       try {
         await db.establecerConfiguracion('flag_bot_activo', '0', 'Bot desactivado globalmente');
@@ -598,124 +522,12 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
       }
       return true;
     }
-    
-    // Si hay número, desactivar para usuario específico
-    const numeroMatch = text.match(/(?:desactivar bot|bot off)\s+(\+?\d{9,12})/i) || text.match(/(\d{9,12})/);
-
-    if (numeroMatch) {
-      // Normalizar el número al formato estándar 51XXXXXXXXX
-      const numeroBuscado = normalizarTelefono(numeroMatch[1]);
-      if (!numeroBuscado) {
-        await enviarMensajeSeguro(
-          client,
-          userId,
-          "❌ Número de teléfono inválido.\n\nUso: *Desactivar bot [número]*\n\nEjemplo: *Desactivar bot 972002363*"
-        );
-        return true;
-      }
-      let usuarioEncontrado = null;
-
-      // Buscar el usuario por número (normalizar números para comparación)
-      for (const [uid, nombre] of storage.userNames.entries()) {
-        const numeroUsuario = normalizarTelefono(extraerNumero(uid));
-        if (numeroUsuario === numeroBuscado) {
-          usuarioEncontrado = uid;
-          break;
-        }
-      }
-
-      if (usuarioEncontrado) {
-        storage.setBotDesactivado(usuarioEncontrado, true);
-        storage.setHumanMode(usuarioEncontrado, true);
-        const userDataActual = storage.getUserData(usuarioEncontrado) || {};
-        userDataActual.iaDesactivada = true;
-        userDataActual.botDesactivadoPorAdmin = true;
-        storage.setUserData(usuarioEncontrado, userDataActual);
-
-        try {
-          await enviarMensajeSeguro(
-            client,
-            userId,
-            `✅ *Bot Desactivado*\n\nBot y IA desactivados para:\n👤 ${
-              storage.getUserName(usuarioEncontrado) || "Usuario"
-            }\n📱 ${extraerNumero(
-              usuarioEncontrado
-            )}\n\nSolo tú puedes responder ahora.\n\nPara reactivarlo, escribe: *Activar bot ${numeroBuscado}*`
-          );
-          logMessage("INFO", `Bot desactivado para usuario ${storage.getUserName(usuarioEncontrado)} (${extraerNumero(usuarioEncontrado)}) por el administrador`);
-        } catch (error) {
-          logMessage("ERROR", "Error al desactivar bot", {
-            error: error.message,
-          });
-        }
-      } else {
-        try {
-          await enviarMensajeSeguro(
-            client,
-            userId,
-            `❌ *Usuario no encontrado*\n\nNo se encontró un usuario con el número: ${numeroBuscado}\n\nUsuarios en modo asesor:\n${
-              Array.from(storage.humanModeUsers)
-                .map(
-                  (uid, idx) =>
-                    `${idx + 1}. ${
-                      storage.getUserName(uid) || "Usuario"
-                    } (${extraerNumero(uid)})`
-                )
-                .join("\n") || "Ninguno"
-            }`
-          );
-        } catch (error) {
-          logMessage("ERROR", "Error al buscar usuario", {
-            error: error.message,
-          });
-        }
-      }
-    } else {
-      // Si no hay número, mostrar lista de usuarios en modo asesor
-      const usuariosEnAsesor = Array.from(storage.humanModeUsers);
-      if (usuariosEnAsesor.length > 0) {
-        const listaUsuarios = usuariosEnAsesor
-          .map((uid, idx) => {
-            const nombre = storage.getUserName(uid) || "Usuario";
-            const numero = extraerNumero(uid);
-            const estado = storage.isBotDesactivado(uid)
-              ? "🔴 Bot desactivado"
-              : "🟢 Bot activo";
-            return `${idx + 1}. ${nombre} (${numero}) - ${estado}`;
-          })
-          .join("\n");
-
-        try {
-          await enviarMensajeSeguro(
-            client,
-            userId,
-            `📋 *Usuarios en modo asesor*\n\n${listaUsuarios}\n\nPara desactivar el bot para un usuario, escribe:\n*Desactivar bot [número]*\n\nEjemplo: *Desactivar bot 972002363*`
-          );
-        } catch (error) {
-          logMessage("ERROR", "Error al mostrar lista de usuarios", {
-            error: error.message,
-          });
-        }
-      } else {
-        try {
-          await enviarMensajeSeguro(
-            client,
-            userId,
-            `ℹ️ *No hay usuarios en modo asesor*\n\nPara desactivar el bot para un usuario específico, escribe:\n*Desactivar bot [número]*\n\nEjemplo: *Desactivar bot 972002363*`
-          );
-        } catch (error) {
-          logMessage("ERROR", "Error al mostrar mensaje", {
-            error: error.message,
-          });
-        }
-      }
-    }
-    return true;
+    // Si empieza con "desactivar bot" pero no es exacto, mostrar lista de comandos
+    // (el comando con número fue eliminado)
   }
 
-  // Comando: Activar bot
+  // Comando: Activar bot (solo global, sin número)
   if (esActivarBot) {
-    // Verificar si es comando global (sin número)
     if (textoTrimIA === "activar bot" || textoTrimIA === "bot on") {
       try {
         await db.establecerConfiguracion('flag_bot_activo', '1', 'Bot activado globalmente');
@@ -739,85 +551,8 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
       }
       return true;
     }
-    
-    // Si hay número, activar para usuario específico
-    const numeroMatch = text.match(/(?:activar bot|bot on)\s+(\+?\d{9,12})/i) || text.match(/(\d{9,12})/);
-
-    if (numeroMatch) {
-      // Normalizar el número al formato estándar 51XXXXXXXXX
-      const numeroBuscado = normalizarTelefono(numeroMatch[1]);
-      if (!numeroBuscado) {
-        await enviarMensajeSeguro(
-          client,
-          userId,
-          "❌ Número de teléfono inválido.\n\nUso: *Activar bot [número]*\n\nEjemplo: *Activar bot 972002363*"
-        );
-        return true;
-      }
-      let usuarioEncontrado = null;
-
-      // Buscar el usuario por número (normalizar números para comparación)
-      for (const [uid, nombre] of storage.userNames.entries()) {
-        const numeroUsuario = normalizarTelefono(extraerNumero(uid));
-        if (numeroUsuario === numeroBuscado) {
-          usuarioEncontrado = uid;
-          break;
-        }
-      }
-
-      if (usuarioEncontrado) {
-        storage.setBotDesactivado(usuarioEncontrado, false);
-        const userDataAdmin = storage.getUserData(usuarioEncontrado) || {};
-        if (userDataAdmin?.botDesactivadoPorAdmin) {
-          storage.setHumanMode(usuarioEncontrado, false);
-        }
-        userDataAdmin.botDesactivadoPorAdmin = false;
-        userDataAdmin.iaDesactivada = false;
-        storage.setUserData(usuarioEncontrado, userDataAdmin);
-
-        try {
-          await enviarMensajeSeguro(
-            client,
-            userId,
-            `✅ *Bot Reactivado*\n\nBot y IA reactivados para:\n👤 ${
-              storage.getUserName(usuarioEncontrado) || "Usuario"
-            }\n📱 ${extraerNumero(
-              usuarioEncontrado
-            )}\n\nEl bot ahora puede responder automáticamente.`
-          );
-          logMessage("INFO", `Bot reactivado para usuario ${storage.getUserName(usuarioEncontrado)} (${extraerNumero(usuarioEncontrado)}) por el administrador`);
-        } catch (error) {
-          logMessage("ERROR", "Error al reactivar bot", {
-            error: error.message,
-          });
-        }
-      } else {
-        try {
-          await enviarMensajeSeguro(
-            client,
-            userId,
-            `❌ *Usuario no encontrado*\n\nNo se encontró un usuario con el número: ${numeroBuscado}`
-          );
-        } catch (error) {
-          logMessage("ERROR", "Error al buscar usuario", {
-            error: error.message,
-          });
-        }
-      }
-    } else {
-      try {
-        await enviarMensajeSeguro(
-          client,
-          userId,
-          `ℹ️ *Activar Bot*\n\nPara reactivar el bot para un usuario específico, escribe:\n*Activar bot [número]*\n\nEjemplo: *Activar bot 972002363*`
-        );
-      } catch (error) {
-        logMessage("ERROR", "Error al mostrar mensaje", {
-          error: error.message,
-        });
-      }
-    }
-    return true;
+    // Si empieza con "activar bot" pero no es exacto, mostrar lista de comandos
+    // (el comando con número fue eliminado)
   }
 
   // ============================================
@@ -1081,134 +816,9 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
   // GESTIÓN DE USUARIOS
   // ============================================
 
-  // Comando: ver cliente [telefono]
-  if (textLower.startsWith("ver cliente ")) {
-    const telefonoMatch = text.match(/ver cliente (\+?\d{9,12})/i);
-    if (telefonoMatch) {
-      // Normalizar el número al formato estándar 51XXXXXXXXX
-      const telefono = normalizarTelefono(telefonoMatch[1]);
-      if (!telefono) {
-        await enviarMensajeSeguro(client, userId, `❌ Número de teléfono inválido.\n\nUso: *ver cliente [número]*\n\nEjemplo: *ver cliente 972002363*`);
-        return true;
-      }
-      
-      try {
-        // Buscar con el formato normalizado (51XXXXXXXXX)
-        const historial = await db.obtenerHistorialCliente(telefono);
-        
-        if (historial && historial.cliente) {
-          let mensaje = `👤 *CLIENTE*\n\n`;
-          mensaje += `📱 *Teléfono:* ${telefono}\n`;
-          mensaje += `👤 *Nombre:* ${historial.cliente.nombre || 'No registrado'}\n`;
-          mensaje += `📅 *Cliente desde:* ${new Date(historial.cliente.fecha_creacion).toLocaleDateString('es-PE')}\n`;
-          mensaje += `📊 *Total reservas:* ${historial.cliente.total_reservas || 0}\n`;
-          mensaje += `❌ *Canceladas:* ${historial.cliente.reservas_canceladas || 0}\n`;
-          if (historial.cliente.notas) {
-            mensaje += `📄 *Notas:* ${historial.cliente.notas}\n`;
-          }
-          
-          if (historial.reservas && historial.reservas.length > 0) {
-            mensaje += `\n📋 *Historial de Reservas:*\n\n`;
-            historial.reservas.slice(0, 10).forEach((r, idx) => {
-              const estadoEmoji = r.estado === 'confirmada' ? '✅' : 
-                                 r.estado === 'cancelada' ? '❌' : '⏳';
-              const fechaHora = r.fechaHora instanceof Date 
-                ? r.fechaHora.toLocaleString('es-PE')
-                : new Date(r.fechaHora).toLocaleString('es-PE');
-              mensaje += `${idx + 1}. ${estadoEmoji} ${fechaHora} - ${r.servicio}\n`;
-            });
-            if (historial.reservas.length > 10) {
-              mensaje += `\n... y ${historial.reservas.length - 10} más`;
-            }
-          } else {
-            mensaje += `\n📋 *Historial de Reservas:*\n\nNo hay reservas registradas.`;
-          }
-          
-          await enviarMensajeSeguro(client, userId, mensaje);
-        } else {
-          await enviarMensajeSeguro(client, userId, `❌ No se encontró información del cliente ${telefono}\n\nVerifica que el número sea correcto y que el cliente haya interactuado con el bot.`);
-        }
-      } catch (error) {
-        logMessage("ERROR", "Error al obtener historial cliente", { error: error.message, telefono });
-        await enviarMensajeSeguro(client, userId, `❌ Error al obtener el historial: ${error.message}`);
-      }
-      return true;
-    } else {
-      // Si no coincide el regex, mostrar ayuda
-      await enviarMensajeSeguro(client, userId, `❌ Formato incorrecto.\n\nUso: *ver cliente [número]*\n\nEjemplo: *ver cliente 972002363*`);
-      return true;
-    }
-  }
-
-  // Comando: bloquear cliente [telefono]
-  if (textLower.startsWith("bloquear cliente ")) {
-    const telefonoMatch = text.match(/bloquear cliente (\+?\d{9,12})/i);
-    if (telefonoMatch) {
-      // Normalizar el número al formato estándar 51XXXXXXXXX
-      const telefono = normalizarTelefono(telefonoMatch[1]);
-      if (!telefono) {
-        await enviarMensajeSeguro(client, userId, `❌ Número de teléfono inválido.\n\nUso: *bloquear cliente [número]*\n\nEjemplo: *bloquear cliente 972002363*`);
-        return true;
-      }
-      
-      try {
-        await db.bloquearUsuario(telefono, 'Bloqueado por administrador', extraerNumero(userId));
-        await enviarMensajeSeguro(
-          client,
-          userId,
-          `✅ *Cliente Bloqueado*\n\n` +
-          `📱 Teléfono: ${telefono}\n\n` +
-          `El bot dejará de responder a este número.`
-        );
-        logMessage("SUCCESS", "Cliente bloqueado", { telefono, adminId: extraerNumero(userId) });
-      } catch (error) {
-        logMessage("ERROR", "Error al bloquear cliente", { error: error.message });
-        await enviarMensajeSeguro(client, userId, `❌ Error al bloquear: ${error.message}`);
-      }
-      return true;
-    } else {
-      await enviarMensajeSeguro(client, userId, `❌ Formato incorrecto.\n\nUso: *bloquear cliente [número]*\n\nEjemplo: *bloquear cliente 972002363*`);
-      return true;
-    }
-  }
-
-  // Comando: desbloquear cliente [telefono]
-  if (textLower.startsWith("desbloquear cliente ")) {
-    const telefonoMatch = text.match(/desbloquear cliente (\+?\d{9,12})/i);
-    if (telefonoMatch) {
-      // Normalizar el número al formato estándar 51XXXXXXXXX
-      const telefono = normalizarTelefono(telefonoMatch[1]);
-      if (!telefono) {
-        await enviarMensajeSeguro(client, userId, `❌ Número de teléfono inválido.\n\nUso: *desbloquear cliente [número]*\n\nEjemplo: *desbloquear cliente 972002363*`);
-        return true;
-      }
-      
-      try {
-        // Desbloquear con formato normalizado
-        const exito = await db.desbloquearUsuario(telefono);
-        
-        if (exito) {
-          await enviarMensajeSeguro(
-            client,
-            userId,
-            `✅ *Cliente Desbloqueado*\n\n` +
-            `📱 Teléfono: ${telefono}\n\n` +
-            `El bot volverá a responder a este número.`
-          );
-          logMessage("SUCCESS", "Cliente desbloqueado", { telefono, adminId: extraerNumero(userId) });
-        } else {
-          await enviarMensajeSeguro(client, userId, `❌ El cliente ${telefono} no estaba bloqueado`);
-        }
-      } catch (error) {
-        logMessage("ERROR", "Error al desbloquear cliente", { error: error.message });
-        await enviarMensajeSeguro(client, userId, `❌ Error al desbloquear: ${error.message}`);
-      }
-      return true;
-    } else {
-      await enviarMensajeSeguro(client, userId, `❌ Formato incorrecto.\n\nUso: *desbloquear cliente [número]*\n\nEjemplo: *desbloquear cliente 972002363*`);
-      return true;
-    }
-  }
+  // Comandos eliminados: ver cliente, bloquear cliente, desbloquear cliente
+  // El payload de WhatsApp Cloud API no proporciona el número real del usuario,
+  // solo el session_id (@lid), por lo que estos comandos no son funcionales.
 
   // ============================================
   // REPORTES
@@ -1321,8 +931,54 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
     }
   }
 
-  // Si no se procesó ningún comando, retornar false
-  return false;
+  // Si no se procesó ningún comando, mostrar lista de comandos disponibles
+  await mostrarListaComandos(client, userId);
+  return true;
+}
+
+/**
+ * Muestra la lista completa de comandos disponibles para administradores
+ * @param {Object} client - Cliente de wppconnect
+ * @param {string} userId - ID del usuario administrador
+ */
+async function mostrarListaComandos(client, userId) {
+  const listaComandos = `📋 *COMANDOS DISPONIBLES PARA ADMINISTRADORES*\n\n` +
+    `📊 *ESTADÍSTICAS Y REPORTES*\n` +
+    `• estadisticas / stats / estadísticas - Ver estadísticas del bot\n` +
+    `• ver reservas / reservas activas - Ver todas las reservas activas\n` +
+    `• citas_dd/MM/yyyy - Ver citas de una fecha específica\n` +
+    `   Ejemplo: citas_15/01/2025\n` +
+    `• reporte diario / reporte del dia - Reporte diario de actividad\n` +
+    `• reporte mensual - Reporte mensual de actividad\n` +
+    `• top servicios / servicios mas solicitados - Servicios más solicitados\n\n` +
+    `📅 *GESTIÓN DE CITAS*\n` +
+    `• confirmar cita [id] - Confirmar una cita\n` +
+    `• cancelar cita [id] - Cancelar una cita\n` +
+    `• modificar cita [id] - Modificar una cita\n` +
+    `• detalle cita [id] - Ver detalles de una cita\n` +
+    `• 📷 Enviar imagen - Crear cita desde imagen\n\n` +
+    `🤖 *CONTROL DEL BOT*\n` +
+    `• activar bot / bot on - Activar bot globalmente\n` +
+    `• desactivar bot / bot off - Desactivar bot globalmente\n\n` +
+    `🤖 *CONTROL DE IA*\n` +
+    `• activar ia - Activar IA globalmente\n` +
+    `• desactivar ia - Desactivar IA globalmente\n` +
+    `• estado ia - Ver estado de la IA\n` +
+    `• ia modo [auto|manual|solo_faq] - Cambiar modo de IA\n` +
+    `• ia limite [n] - Establecer límite diario de IA (1-100)\n\n` +
+    `📋 *GESTIÓN DE SERVICIOS*\n` +
+    `• listar servicios / servicios - Listar servicios activos\n` +
+    `• agregar servicio [nombre] [duracion] [precio] - Agregar servicio\n` +
+    `   Ejemplo: agregar servicio Masaje Relajante 60 35\n` +
+    `• desactivar servicio [id] - Desactivar un servicio\n\n` +
+    `💡 *NOTA*\n` +
+    `Los comandos que requerían número de teléfono han sido eliminados porque el payload de WhatsApp Cloud API no proporciona números reales, solo session_id (@lid).`;
+
+  try {
+    await enviarMensajeSeguro(client, userId, listaComandos);
+  } catch (error) {
+    logMessage("ERROR", "Error al enviar lista de comandos", { error: error.message });
+  }
 }
 
 module.exports = {

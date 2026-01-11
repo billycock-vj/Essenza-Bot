@@ -1,42 +1,26 @@
-# Dependencias
+# Dependencies
 node_modules/
-package-lock.json
 
-# Variables de entorno
+# Environment variables
 .env
-.env.local
-.env.*.local
 
-# Logs
-logs/
-*.log
-
-# Tokens de sesión
+# Tokens de sesión de WhatsApp
 tokens/
 
-# Datos de persistencia
-data-storage/
-*.db
-*.sqlite
-*.sqlite3
+# Logs
+*.log
+logs/
 
-# Cobertura de tests
-coverage/
-
-# Archivos temporales
-*.tmp
-*.temp
+# OS
 .DS_Store
 Thumbs.db
 
-# IDEs
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
 
-# Archivos de sistema
-*.pid
-*.seed
-*.pid.lock
+# Data
+data-storage/
+*.db

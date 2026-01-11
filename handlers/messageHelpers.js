@@ -8,32 +8,25 @@ const storage = require('../services/storage');
 
 /**
  * Extrae el número real de teléfono del payload del mensaje
- * SOLO desde message.from o contacts[0].wa_id
+ * SOLO desde message.from (@c.us) o contacts[0].wa_id
  * NO intenta extraer números de @lid (identificador de sesión)
+ * NO inventa ni reconstruye números
  * @param {Object} message - Objeto del mensaje de WhatsApp
  * @returns {string|null} - Número de teléfono real o null si no está disponible
  */
 function extraerNumeroReal(message) {
   if (!message) return null;
   
-  // Intentar desde message.from (si es un número real, no @lid)
-  if (message.from) {
-    const from = message.from;
-    // Si termina en @c.us, extraer el número (es un número real)
-    if (from.endsWith('@c.us')) {
-      const numero = from.replace('@c.us', '');
-      // Validar que sea un número (solo dígitos)
-      if (/^\d+$/.test(numero)) {
-        return numero;
-      }
-    }
-    // Si NO es @lid, podría ser un número directo
-    if (!from.endsWith('@lid') && /^\d+$/.test(from)) {
-      return from;
+  // Prioridad 1: message.from si termina en @c.us (número real)
+  if (message.from && message.from.endsWith('@c.us')) {
+    const numero = message.from.replace('@c.us', '');
+    // Validar que sea un número (solo dígitos)
+    if (/^\d+$/.test(numero)) {
+      return numero;
     }
   }
   
-  // Intentar desde contacts[0].wa_id (Cloud API)
+  // Prioridad 2: contacts[0].wa_id (Cloud API)
   if (message.contacts && Array.isArray(message.contacts) && message.contacts.length > 0) {
     const wa_id = message.contacts[0].wa_id;
     if (wa_id && /^\d+$/.test(wa_id)) {
@@ -41,16 +34,9 @@ function extraerNumeroReal(message) {
     }
   }
   
-  // Intentar desde message.wid?.user (WPPConnect)
-  if (message.wid && message.wid.user && /^\d+$/.test(message.wid.user)) {
-    return message.wid.user;
-  }
-  
-  // Intentar desde message.author
-  if (message.author && /^\d+$/.test(message.author)) {
-    return message.author;
-  }
-  
+  // Si no está disponible en ninguna de las fuentes válidas, retornar null
+  // NO intentar desde message.wid, message.author u otras fuentes
+  // NO intentar extraer números de @lid
   return null;
 }
 
@@ -74,12 +60,13 @@ function extraerNumero(userId) {
   if (!userId || typeof userId !== "string") return userId;
   
   // Si es @lid, NO intentar extraer número (es un identificador de sesión)
+  // Retornar el userId sin el sufijo @lid solo para display/logging
   if (userId.endsWith('@lid')) {
-    return userId; // Retornar tal cual para evitar confusión
+    return userId.replace('@lid', ''); // Solo para display, NO para operaciones críticas
   }
   
   // Solo extraer si es @c.us (número real)
-  return userId.replace(/@(c\.us|lid)$/, "");
+  return userId.replace(/@c\.us$/, "");
 }
 
 /**

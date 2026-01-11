@@ -1,0 +1,14 @@
+{
+  "name": "essenza-bot-simple",
+  "version": "1.0.0",
+  "description": "Bot simplificado de WhatsApp para Essenza Spa - Solo IA",
+  "main": "main-simple.js",
+  "scripts": {
+    "start": "node main-simple.js"
+  },
+  "dependencies": {
+    "@wppconnect-team/wppconnect": "^1.37.8",
+    "dotenv": "^16.4.7",
+    "openai": "^6.9.1"
+  }
+}

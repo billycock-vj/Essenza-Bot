@@ -1,11 +1,12 @@
 // Servicio de persistencia de datos
 const fs = require('fs');
 const path = require('path');
+const paths = require('../config/paths');
 
-const DATA_DIR = path.join(__dirname, '..', 'data-storage');
-const RESERVAS_FILE = path.join(DATA_DIR, 'reservas.json');
-const USER_DATA_FILE = path.join(DATA_DIR, 'user-data.json');
-const ESTADISTICAS_FILE = path.join(DATA_DIR, 'estadisticas.json');
+const DATA_DIR = paths.DATA_BASE_DIR;
+const RESERVAS_FILE = paths.RESERVAS_FILE;
+const USER_DATA_FILE = paths.USER_DATA_FILE;
+const ESTADISTICAS_FILE = paths.ESTADISTICAS_FILE;
 
 // Asegurar que el directorio existe
 if (!fs.existsSync(DATA_DIR)) {

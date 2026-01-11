@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { sanitizarDatosParaLog } = require('./validators');
 const config = require('../config');
+const paths = require('../config/paths');
 
 const LOG_LEVEL = config.LOG_LEVEL || 'normal';
 
@@ -11,7 +12,7 @@ const LOG_LEVEL = config.LOG_LEVEL || 'normal';
  */
 function rotarLogs() {
   try {
-    const logDir = path.join(__dirname, '..', 'logs');
+    const logDir = paths.LOGS_BASE_DIR;
     if (!fs.existsSync(logDir)) {
       return;
     }
@@ -60,7 +61,7 @@ function logMessage(type, message, data = null) {
     dateStyle: "short",
     timeStyle: "medium",
   });
-  const logDir = path.join(__dirname, '..', 'logs');
+  const logDir = paths.LOGS_BASE_DIR;
 
   if (!fs.existsSync(logDir)) {
     fs.mkdirSync(logDir, { recursive: true });

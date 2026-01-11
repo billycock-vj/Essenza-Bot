@@ -68,7 +68,10 @@ RUN npm ci --only=production
 # Copiar el resto de los archivos
 COPY . .
 
-# Exponer puerto (si es necesario para health checks)
+# Crear directorio para tokens (si no existe)
+RUN mkdir -p /data/tokens || true
+
+# Exponer puerto
 EXPOSE 3000
 
 # Comando para iniciar la aplicación

@@ -1,0 +1,16 @@
+node_modules
+npm-debug.log
+.env
+.env.local
+.env.*.local
+tokens/
+*.log
+logs/
+.DS_Store
+.git
+.gitignore
+README.md
+FLY_IO_DEPLOY.md
+ALTERNATIVAS_SIMPLIFICADAS.md
+*.md
+!ESSENZA_KNOWLEDGE_BASE.md
