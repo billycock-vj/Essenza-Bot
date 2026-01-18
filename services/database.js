@@ -76,6 +76,7 @@ async function inicializarDB() {
           
           // Inicializar valores por defecto de configuración
           const ahora = new Date().toISOString();
+          
           db.run(`
             INSERT OR IGNORE INTO configuracion (clave, valor, descripcion, actualizada)
             VALUES 
@@ -2018,56 +2019,79 @@ async function migrarBaseDatos() {
                   return;
                 }
                 
-                // Crear tabla de historias publicadas
-                db.run(`
-                  CREATE TABLE IF NOT EXISTS historias_publicadas (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    nombre_archivo TEXT NOT NULL UNIQUE,
-                    ruta_completa TEXT NOT NULL,
-                    fecha_publicacion TEXT NOT NULL,
-                    dia_semana TEXT,
-                    hora_publicacion TEXT
-                  )
-                `, (err) => {
-                  if (err) {
-                    db.close();
-                    reject(err);
-                    return;
-                  }
-                  
-                  // Agregar columnas a clientes si no existen (estado_lead, ultimo_mensaje)
-                  db.all("PRAGMA table_info(clientes)", (err, rows) => {
+                  // Crear tabla de conversaciones (historial de mensajes)
+                  db.run(`
+                    CREATE TABLE IF NOT EXISTS conversaciones (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      session_id TEXT NOT NULL,
+                      role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+                      content TEXT NOT NULL,
+                      timestamp TEXT NOT NULL,
+                      FOREIGN KEY (session_id) REFERENCES clientes(session_id)
+                    )
+                  `, (err) => {
                     if (err) {
-                      console.log("⚠️  Error al verificar columnas de clientes:", err.message);
-                    } else if (rows && Array.isArray(rows)) {
-                      const columnas = rows.map(r => r.name);
-                      if (!columnas.includes('estado_lead')) {
-                        db.run('ALTER TABLE clientes ADD COLUMN estado_lead TEXT DEFAULT "info" CHECK(estado_lead IN ("info", "lead_tibio", "lead_caliente", "reservado"))', () => {});
-                      }
-                      if (!columnas.includes('ultimo_mensaje')) {
-                        db.run('ALTER TABLE clientes ADD COLUMN ultimo_mensaje TEXT', () => {});
-                      }
+                      db.close();
+                      reject(err);
+                      return;
                     }
                     
-                    // Crear índices adicionales
-                    db.run('CREATE INDEX IF NOT EXISTS idx_clientes_estado_lead ON clientes(estado_lead)', () => {});
-                    db.run('CREATE INDEX IF NOT EXISTS idx_clientes_ultimo_mensaje ON clientes(ultimo_mensaje)', () => {});
-                    db.run('CREATE INDEX IF NOT EXISTS idx_seguimientos_session_id ON seguimientos(session_id)', () => {});
-                    db.run('CREATE INDEX IF NOT EXISTS idx_seguimientos_fecha_envio ON seguimientos(fecha_envio)', () => {});
-                    db.run('CREATE INDEX IF NOT EXISTS idx_historias_nombre ON historias_publicadas(nombre_archivo)', () => {});
+                    // Crear índices para conversaciones
+                    db.run('CREATE INDEX IF NOT EXISTS idx_conversaciones_session_id ON conversaciones(session_id)', () => {});
+                    db.run('CREATE INDEX IF NOT EXISTS idx_conversaciones_timestamp ON conversaciones(timestamp)', () => {});
                     
-                    // Agregar valores por defecto a configuracion
-                    const ahora = new Date().toISOString();
+                    // Crear tabla de historias publicadas
                     db.run(`
-                      INSERT OR IGNORE INTO configuracion (clave, valor, descripcion, actualizada)
-                      VALUES 
-                        ('modo_ia', 'auto', 'Modo de IA: auto, manual, solo_faq', ?),
-                        ('limite_ia_por_usuario', '10', 'Cantidad máxima de respuestas IA por usuario por día', ?),
-                        ('horas_confirmacion_automatica', '24', 'Horas para confirmación automática si no hay respuesta', ?)
-                    `, [ahora, ahora, ahora], (err) => {
-                      db.close();
-                      if (err) reject(err);
-                      else resolve();
+                      CREATE TABLE IF NOT EXISTS historias_publicadas (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        nombre_archivo TEXT NOT NULL UNIQUE,
+                        ruta_completa TEXT NOT NULL,
+                        fecha_publicacion TEXT NOT NULL,
+                        dia_semana TEXT,
+                        hora_publicacion TEXT
+                      )
+                    `, (err) => {
+                      if (err) {
+                        db.close();
+                        reject(err);
+                        return;
+                      }
+                      
+                      // Agregar columnas a clientes si no existen (estado_lead, ultimo_mensaje)
+                      db.all("PRAGMA table_info(clientes)", (err, rows) => {
+                        if (err) {
+                          console.log("⚠️  Error al verificar columnas de clientes:", err.message);
+                        } else if (rows && Array.isArray(rows)) {
+                          const columnas = rows.map(r => r.name);
+                          if (!columnas.includes('estado_lead')) {
+                            db.run('ALTER TABLE clientes ADD COLUMN estado_lead TEXT DEFAULT "info" CHECK(estado_lead IN ("info", "lead_tibio", "lead_caliente", "reservado"))', () => {});
+                          }
+                          if (!columnas.includes('ultimo_mensaje')) {
+                            db.run('ALTER TABLE clientes ADD COLUMN ultimo_mensaje TEXT', () => {});
+                          }
+                        }
+                        
+                        // Crear índices adicionales
+                        db.run('CREATE INDEX IF NOT EXISTS idx_clientes_estado_lead ON clientes(estado_lead)', () => {});
+                        db.run('CREATE INDEX IF NOT EXISTS idx_clientes_ultimo_mensaje ON clientes(ultimo_mensaje)', () => {});
+                        db.run('CREATE INDEX IF NOT EXISTS idx_seguimientos_session_id ON seguimientos(session_id)', () => {});
+                        db.run('CREATE INDEX IF NOT EXISTS idx_seguimientos_fecha_envio ON seguimientos(fecha_envio)', () => {});
+                        db.run('CREATE INDEX IF NOT EXISTS idx_historias_nombre ON historias_publicadas(nombre_archivo)', () => {});
+                        
+                        // Agregar valores por defecto a configuracion
+                        const ahora = new Date().toISOString();
+                        db.run(`
+                          INSERT OR IGNORE INTO configuracion (clave, valor, descripcion, actualizada)
+                          VALUES 
+                            ('modo_ia', 'auto', 'Modo de IA: auto, manual, solo_faq', ?),
+                            ('limite_ia_por_usuario', '10', 'Cantidad máxima de respuestas IA por usuario por día', ?),
+                            ('horas_confirmacion_automatica', '24', 'Horas para confirmación automática si no hay respuesta', ?)
+                        `, [ahora, ahora, ahora], (err) => {
+                          db.close();
+                          if (err) reject(err);
+                          else resolve();
+                        });
+                      });
                     });
                   });
                 });
@@ -2077,7 +2101,6 @@ async function migrarBaseDatos() {
         });
       });
     });
-  });
 }
 
 /**
@@ -2289,7 +2312,106 @@ async function obtenerHistoriasPublicadas() {
   });
 }
 
+// ============================================
+// FUNCIONES PARA GESTIÓN DE CONVERSACIONES
+// ============================================
+
+/**
+ * Guarda un mensaje en el historial de conversación
+ * @param {string} sessionId - ID de sesión del usuario
+ * @param {string} role - Rol del mensaje ('user', 'assistant', 'system')
+ * @param {string} content - Contenido del mensaje
+ * @returns {Promise<number>} - ID del mensaje guardado
+ */
+async function guardarMensajeConversacion(sessionId, role, content) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const timestamp = new Date().toISOString();
+    db.run(
+      'INSERT INTO conversaciones (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)',
+      [sessionId, role, content, timestamp],
+      function(err) {
+        db.close();
+        if (err) reject(err);
+        else resolve(this.lastID);
+      }
+    );
+  });
+}
+
+/**
+ * Obtiene el historial de conversación de un usuario
+ * @param {string} sessionId - ID de sesión del usuario
+ * @param {number} limite - Límite de mensajes a retornar (default: 18)
+ * @returns {Promise<Array>} - Array de mensajes ordenados por timestamp
+ */
+async function obtenerHistorialConversacion(sessionId, limite = 18) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.all(
+      'SELECT role, content FROM conversaciones WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?',
+      [sessionId, limite],
+      (err, rows) => {
+        db.close();
+        if (err) {
+          reject(err);
+        } else {
+          // Invertir para tener orden cronológico (más antiguo primero)
+          resolve(rows.reverse().map(row => ({
+            role: row.role,
+            content: row.content
+          })));
+        }
+      }
+    );
+  });
+}
+
+/**
+ * Limpia el historial de conversación de un usuario
+ * @param {string} sessionId - ID de sesión del usuario
+ * @returns {Promise<number>} - Número de mensajes eliminados
+ */
+async function limpiarHistorialConversacion(sessionId) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.run(
+      'DELETE FROM conversaciones WHERE session_id = ?',
+      [sessionId],
+      function(err) {
+        db.close();
+        if (err) reject(err);
+        else resolve(this.changes);
+      }
+    );
+  });
+}
+
+/**
+ * Limpia conversaciones antiguas (más de X días)
+ * @param {number} dias - Días de retención (default: 30)
+ * @returns {Promise<number>} - Número de mensajes eliminados
+ */
+async function limpiarConversacionesAntiguas(dias = 30) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const fechaLimite = new Date();
+    fechaLimite.setDate(fechaLimite.getDate() - dias);
+    
+    db.run(
+      'DELETE FROM conversaciones WHERE timestamp < ?',
+      [fechaLimite.toISOString()],
+      function(err) {
+        db.close();
+        if (err) reject(err);
+        else resolve(this.changes);
+      }
+    );
+  });
+}
+
 module.exports = {
+  abrirDB,
   inicializarDB,
   guardarReserva,
   obtenerReservas,
@@ -2338,6 +2460,10 @@ module.exports = {
   registrarHistoriaPublicada,
   historiaYaPublicada,
   obtenerHistoriasPublicadas,
+  guardarMensajeConversacion,
+  obtenerHistorialConversacion,
+  limpiarHistorialConversacion,
+  limpiarConversacionesAntiguas,
   DB_PATH
 };
 

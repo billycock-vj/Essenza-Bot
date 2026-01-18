@@ -1362,9 +1362,9 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
     }
   }
 
-  // Si no se procesó ningún comando, mostrar lista de comandos disponibles
-  await mostrarListaComandos(client, userId);
-  return true;
+  // Si no se procesó ningún comando, retornar false para que main.js maneje el mensaje
+  // NO mostrar lista de comandos automáticamente - solo cuando se solicite explícitamente
+  return false;
 }
 
 /**
@@ -1373,7 +1373,8 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
  * @param {string} userId - ID del usuario administrador
  */
 async function mostrarListaComandos(client, userId) {
-  const listaComandos = `📋 *COMANDOS DISPONIBLES PARA ADMINISTRADORES*\n\n` +
+  // Dividir el mensaje en dos partes para evitar que wppconnect lo divida automáticamente
+  const parte1 = `📋 *COMANDOS DISPONIBLES PARA ADMINISTRADORES*\n\n` +
     `📊 *ESTADÍSTICAS Y REPORTES*\n` +
     `• estadisticas / stats / estadísticas - Ver estadísticas del bot\n` +
     `• ver reservas / reservas activas - Ver todas las reservas activas\n` +
@@ -1388,8 +1389,9 @@ async function mostrarListaComandos(client, userId) {
     `• cancelar cita [id] - Cancelar una cita\n` +
     `• modificar cita [id] - Modificar una cita\n` +
     `• detalle cita [id] - Ver detalles de una cita\n` +
-    `• 📷 Enviar imagen - Crear cita desde imagen\n\n` +
-    `🤖 *CONTROL DEL BOT*\n` +
+    `• 📷 Enviar imagen - Crear cita desde imagen`;
+
+  const parte2 = `🤖 *CONTROL DEL BOT*\n` +
     `• activar bot / bot on - Activar bot completamente (bot + IA)\n` +
     `• desactivar bot / bot off - Desactivar bot completamente (bot + IA)\n\n` +
     `🤖 *CONFIGURACIÓN DE IA*\n` +
@@ -1404,7 +1406,14 @@ async function mostrarListaComandos(client, userId) {
     `Los comandos que requerían número de teléfono han sido eliminados porque el payload de WhatsApp Cloud API no proporciona números reales, solo session_id (@lid).`;
 
   try {
-    await enviarMensajeSeguro(client, userId, listaComandos);
+    // Enviar primera parte
+    await enviarMensajeSeguro(client, userId, parte1);
+    
+    // Pequeña pausa para evitar que se mezclen los mensajes
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // Enviar segunda parte
+    await enviarMensajeSeguro(client, userId, parte2);
   } catch (error) {
     logMessage("ERROR", "Error al enviar lista de comandos", { error: error.message });
   }
@@ -1451,5 +1460,6 @@ module.exports = {
   procesarComandosAdmin,
   obtenerEstadisticas,
   obtenerCitasDelDia,
-  detectarFormatoCita
+  detectarFormatoCita,
+  mostrarListaComandos
 };

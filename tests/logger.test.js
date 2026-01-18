@@ -42,10 +42,11 @@ describe('utils/logger.js', () => {
         // Verificar que se escribió en el archivo
         expect(fs.appendFileSync).toHaveBeenCalled();
         
-        // Verificar que el mensaje contiene el tipo de log
+        // Verificar que el mensaje contiene el tipo de log (formato JSON)
         const callArgs = fs.appendFileSync.mock.calls[0];
-        expect(callArgs[1]).toContain('[INFO]');
-        expect(callArgs[1]).toContain('Mensaje de prueba');
+        const logEntry = JSON.parse(callArgs[1]);
+        expect(logEntry.level).toBe('INFO');
+        expect(logEntry.message).toBe('Mensaje de prueba');
       });
 
       test('Debe escribir log de tipo SUCCESS en archivo', () => {
@@ -53,8 +54,9 @@ describe('utils/logger.js', () => {
 
         expect(fs.appendFileSync).toHaveBeenCalled();
         const callArgs = fs.appendFileSync.mock.calls[0];
-        expect(callArgs[1]).toContain('[SUCCESS]');
-        expect(callArgs[1]).toContain('Operación exitosa');
+        const logEntry = JSON.parse(callArgs[1]);
+        expect(logEntry.level).toBe('SUCCESS');
+        expect(logEntry.message).toBe('Operación exitosa');
       });
 
       test('Debe escribir log de tipo WARNING en archivo', () => {
@@ -62,8 +64,9 @@ describe('utils/logger.js', () => {
 
         expect(fs.appendFileSync).toHaveBeenCalled();
         const callArgs = fs.appendFileSync.mock.calls[0];
-        expect(callArgs[1]).toContain('[WARNING]');
-        expect(callArgs[1]).toContain('Advertencia importante');
+        const logEntry = JSON.parse(callArgs[1]);
+        expect(logEntry.level).toBe('WARNING');
+        expect(logEntry.message).toBe('Advertencia importante');
       });
 
       test('Debe escribir log de tipo ERROR en archivo', () => {
@@ -71,8 +74,9 @@ describe('utils/logger.js', () => {
 
         expect(fs.appendFileSync).toHaveBeenCalled();
         const callArgs = fs.appendFileSync.mock.calls[0];
-        expect(callArgs[1]).toContain('[ERROR]');
-        expect(callArgs[1]).toContain('Error crítico');
+        const logEntry = JSON.parse(callArgs[1]);
+        expect(logEntry.level).toBe('ERROR');
+        expect(logEntry.message).toBe('Error crítico');
       });
     });
 
@@ -110,10 +114,11 @@ describe('utils/logger.js', () => {
 
         expect(fs.appendFileSync).toHaveBeenCalled();
         const callArgs = fs.appendFileSync.mock.calls[0];
-        expect(callArgs[1]).toContain('[INFO]');
-        expect(callArgs[1]).toContain('Mensaje simple');
-        // No debe contener "|" si no hay datos
-        expect(callArgs[1].split('|').length).toBe(1);
+        const logEntry = JSON.parse(callArgs[1]);
+        expect(logEntry.level).toBe('INFO');
+        expect(logEntry.message).toBe('Mensaje simple');
+        // No debe contener "data" si no hay datos adicionales
+        expect(logEntry.data).toBeUndefined();
       });
     });
 

@@ -39,7 +39,8 @@ describe('config/index.js', () => {
       
       expect(config).toHaveProperty('ADMIN_NUMBER');
       expect(typeof config.ADMIN_NUMBER).toBe('string');
-      expect(config.ADMIN_NUMBER).toContain('@c.us');
+      // Puede tener @c.us o @lid
+      expect(config.ADMIN_NUMBER).toMatch(/@(c\.us|lid)$/);
     });
 
     test('Debe tener ADMIN_NUMBERS como array', () => {
@@ -65,10 +66,11 @@ describe('config/index.js', () => {
       
       const config = require('../config');
       
-      expect(config.ADMIN_NUMBERS).toHaveLength(3);
-      expect(config.ADMIN_NUMBERS).toContain('51986613254@c.us');
-      expect(config.ADMIN_NUMBERS).toContain('51972002363@c.us');
-      expect(config.ADMIN_NUMBERS).toContain('51983104105@c.us');
+      // El código genera variantes (con y sin código de país, con @c.us y @lid)
+      expect(config.ADMIN_NUMBERS.length).toBeGreaterThanOrEqual(3);
+      expect(config.ADMIN_NUMBERS.some(n => n.includes('51986613254'))).toBe(true);
+      expect(config.ADMIN_NUMBERS.some(n => n.includes('51972002363'))).toBe(true);
+      expect(config.ADMIN_NUMBERS.some(n => n.includes('51983104105'))).toBe(true);
     });
 
     test('Debe usar valores por defecto si ADMIN_NUMBERS no está definido', () => {
@@ -90,7 +92,8 @@ describe('config/index.js', () => {
       
       config.ADMIN_NUMBERS.forEach(num => {
         expect(num).not.toContain(' ');
-        expect(num).toContain('@c.us');
+        // Puede tener @c.us o @lid
+        expect(num).toMatch(/@(c\.us|lid)$/);
       });
     });
 
@@ -101,7 +104,8 @@ describe('config/index.js', () => {
       const config = require('../config');
       
       config.ADMIN_NUMBERS.forEach(num => {
-        expect(num).toMatch(/^\d+@c\.us$/);
+        // Puede tener @c.us o @lid
+        expect(num).toMatch(/^\d+@(c\.us|lid)$/);
       });
     });
   });
@@ -191,7 +195,8 @@ describe('config/index.js', () => {
       const config = require('../config');
       
       expect(config.ADMIN_NUMBER).toBeDefined();
-      expect(config.ADMIN_NUMBER).toContain('@c.us');
+      // Puede tener @c.us o @lid
+      expect(config.ADMIN_NUMBER).toMatch(/@(c\.us|lid)$/);
     });
   });
 

@@ -1,7 +1,8 @@
-// Sistema de logging
+// Sistema de logging estructurado
 const fs = require('fs');
 const path = require('path');
 const { sanitizarDatosParaLog } = require('./validators');
+const { normalizeError } = require('./errors');
 const config = require('../config');
 const paths = require('../config/paths');
 
@@ -51,16 +52,13 @@ function rotarLogs() {
 }
 
 /**
- * Función principal de logging
+ * Función principal de logging estructurado
  * @param {string} type - Tipo de log (INFO, SUCCESS, WARNING, ERROR)
  * @param {string} message - Mensaje a loguear
- * @param {object} data - Datos adicionales (opcional)
+ * @param {object|Error} data - Datos adicionales o Error object (opcional)
  */
 function logMessage(type, message, data = null) {
-  const timestamp = new Date().toLocaleString("es-PE", {
-    dateStyle: "short",
-    timeStyle: "medium",
-  });
+  const timestamp = new Date().toISOString();
   const logDir = paths.LOGS_BASE_DIR;
 
   if (!fs.existsSync(logDir)) {
@@ -72,14 +70,45 @@ function logMessage(type, message, data = null) {
     `bot-${new Date().toISOString().split("T")[0]}.log`
   );
   
-  // Sanitizar datos sensibles antes de loguear
-  const dataSanitizado = data ? sanitizarDatosParaLog(data) : null;
-  const logEntry = `[${timestamp}] [${type}] ${message}${
-    dataSanitizado ? ` | ${JSON.stringify(dataSanitizado)}` : ""
-  }\n`;
+  // Manejar errores estructurados
+  let dataSanitizado = null;
+  let errorInfo = null;
+  
+  if (data instanceof Error) {
+    // Si es un error, normalizarlo y extraer información
+    const normalizedError = normalizeError(data);
+    errorInfo = {
+      name: normalizedError.name,
+      code: normalizedError.code,
+      statusCode: normalizedError.statusCode,
+      message: normalizedError.message,
+      details: normalizedError.details,
+      stack: normalizedError.stack
+    };
+    dataSanitizado = sanitizarDatosParaLog(errorInfo);
+  } else if (data) {
+    dataSanitizado = sanitizarDatosParaLog(data);
+  }
+  
+  // Crear entrada de log estructurada
+  const logEntry = {
+    timestamp,
+    level: type,
+    message,
+    ...(errorInfo ? { error: errorInfo } : {}),
+    ...(dataSanitizado && !errorInfo ? { data: dataSanitizado } : {})
+  };
+  
+  const logLine = JSON.stringify(logEntry) + '\n';
 
-  // Siempre guardar en archivo
-  fs.appendFileSync(logFile, logEntry, "utf8");
+  // Siempre guardar en archivo (formato JSON estructurado)
+  try {
+    fs.appendFileSync(logFile, logLine, "utf8");
+  } catch (error) {
+    // Fallback a console si falla escribir archivo
+    console.error('Error al escribir log:', error.message);
+    console.log(logLine);
+  }
 
   const colors = {
     INFO: "\x1b[36m",
@@ -114,8 +143,19 @@ function logMessage(type, message, data = null) {
     // Formato compacto: solo icono y mensaje (sin [TYPE])
     if (type === 'ERROR') {
       console.log(`${color}${icono} ${mensajeCorto}${colors.RESET}`);
-      // Para errores, mostrar datos si existen
-      if (dataSanitizado) {
+      // Para errores estructurados, mostrar información relevante
+      if (errorInfo) {
+        if (errorInfo.code) {
+          console.log(`   Código: ${errorInfo.code}`);
+        }
+        if (errorInfo.details) {
+          console.log(`   Detalles: ${JSON.stringify(errorInfo.details).substring(0, 100)}`);
+        }
+        // Stack solo en verbose
+        if (LOG_LEVEL === 'verbose' && errorInfo.stack) {
+          console.log(`   Stack: ${errorInfo.stack.split('\n')[0]}`);
+        }
+      } else if (dataSanitizado) {
         const datosRelevantes = Object.keys(dataSanitizado).length > 0 
           ? JSON.stringify(dataSanitizado).substring(0, 100)
           : '';
@@ -134,8 +174,23 @@ function logMessage(type, message, data = null) {
   }
 }
 
+/**
+ * Helper para loguear errores estructurados
+ * @param {Error|AppError} error - Error a loguear
+ * @param {object} context - Contexto adicional (opcional)
+ */
+function logError(error, context = null) {
+  const normalizedError = normalizeError(error);
+  logMessage('ERROR', normalizedError.message, normalizedError);
+  
+  if (context) {
+    logMessage('INFO', 'Contexto del error', context);
+  }
+}
+
 module.exports = {
   logMessage,
+  logError,
   rotarLogs,
 };
 
