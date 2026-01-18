@@ -1,11 +1,13 @@
 /**
- * ESSENZA BOT - Versión Simplificada
- * Solo IA - Sin lógica compleja de reservas, estados, base de datos, etc.
+ * ESSENZA BOT - Versión Completa con IA y Automatizaciones
  * 
- * Este bot solo:
+ * Funcionalidades:
  * 1. Recibe mensajes de WhatsApp
  * 2. Consulta OpenAI con la información de Essenza
- * 3. Responde al cliente
+ * 3. Clasifica leads automáticamente
+ * 4. Envía seguimientos automáticos inteligentes
+ * 5. Publica historias automáticamente
+ * 6. Responde al cliente
  */
 
 require("dotenv").config();
@@ -17,6 +19,13 @@ const http = require("http");
 const config = require("./config");
 const adminHandler = require("./handlers/admin");
 const db = require("./services/database");
+
+// Módulos de funcionalidades
+const db = require("./services/database");
+const leadClassification = require("./handlers/leadClassification");
+const followUp = require("./handlers/followUp");
+const storiesAutomation = require("./handlers/storiesAutomation");
+const messageHelpers = require("./handlers/messageHelpers");
 
 // ============================================
 // CONFIGURACIÓN
@@ -224,6 +233,19 @@ function detectarPreguntaFrecuente(mensaje) {
 console.log("🚀 Iniciando Essenza Bot...");
 console.log("📚 Cargando información de Essenza...");
 
+// Inicializar base de datos
+(async () => {
+  try {
+    await db.inicializarDB();
+    await db.migrarBaseDatos();
+    console.log("✅ Base de datos inicializada");
+  } catch (error) {
+    console.error("❌ Error al inicializar base de datos:", error);
+  }
+})();
+
+console.log("✅ Bot listo. Esperando mensajes...\n");
+
 // Inicializar base de datos (crear tablas si no existen)
 async function iniciarBot() {
   try {
@@ -294,6 +316,27 @@ wppconnect
   })
   .then(async (client) => {
     console.log("✅ Bot conectado y listo\n");
+    
+    // Inicializar automatización de historias
+    storiesAutomation.inicializarAutomatizacionHistorias(client);
+    
+    // Ejecutar seguimientos automáticos cada hora
+    setInterval(async () => {
+      try {
+        await followUp.enviarSeguimientosAutomaticos(client);
+      } catch (error) {
+        console.error("❌ Error en seguimientos automáticos:", error);
+      }
+    }, 60 * 60 * 1000); // Cada hora
+    
+    // Ejecutar seguimientos inmediatamente al iniciar (por si hay clientes pendientes)
+    setTimeout(async () => {
+      try {
+        await followUp.enviarSeguimientosAutomaticos(client);
+      } catch (error) {
+        console.error("❌ Error en seguimientos iniciales:", error);
+      }
+    }, 5 * 60 * 1000); // Después de 5 minutos
     
     // Manejar mensajes
     client.onMessage(async (message) => {
@@ -410,7 +453,6 @@ wppconnect
         }
         
         console.log(`📥 [${new Date().toLocaleTimeString()}] Mensaje de ${userId}: ${mensajeTexto.substring(0, 50)}${mensajeTexto.length > 50 ? '...' : ''}`);
-        
         if (esAdmin) {
           console.log(`🔑 Administrador detectado: ${userId}`);
           try {
@@ -464,6 +506,35 @@ wppconnect
         // (La verificación de flag_bot_activo ya cubre todo, incluyendo IA)
         
         // Consultar IA (puede retornar null si el modo no lo permite)
+
+        // Extraer información del mensaje
+        const sessionId = messageHelpers.extraerSessionId(userId);
+        const phone = messageHelpers.extraerNumeroReal(message);
+        const userName = message.notifyName || message.pushName || 'Cliente';
+        
+        // Obtener o crear cliente en la base de datos
+        let cliente;
+        try {
+          cliente = await db.obtenerOCrearCliente(sessionId, phone, phone?.startsWith('51') ? 'PE' : null, userName);
+        } catch (error) {
+          console.error("⚠️ Error al obtener/crear cliente:", error.message);
+        }
+        
+        // Clasificar lead y actualizar estado
+        try {
+          await leadClassification.actualizarEstadoLeadCliente(db, sessionId, mensajeTexto);
+        } catch (error) {
+          console.error("⚠️ Error al clasificar lead:", error.message);
+        }
+        
+        // Marcar que el cliente respondió (detiene seguimientos pendientes)
+        try {
+          await followUp.marcarClienteRespondio(sessionId);
+        } catch (error) {
+          console.error("⚠️ Error al marcar respuesta:", error.message);
+        }
+        
+        // Consultar IA
         const respuesta = await consultarIA(mensajeTexto, userId);
         
         // Solo enviar respuesta si la IA respondió

@@ -1999,24 +1999,293 @@ async function migrarBaseDatos() {
               db.run('CREATE INDEX IF NOT EXISTS idx_clientes_phone ON clientes(phone)', () => {});
               db.run('CREATE INDEX IF NOT EXISTS idx_servicios_activo ON servicios(activo)', () => {});
               
-              // Agregar valores por defecto a configuracion
-              const ahora = new Date().toISOString();
+              // Crear tabla de seguimientos
               db.run(`
-                INSERT OR IGNORE INTO configuracion (clave, valor, descripcion, actualizada)
-                VALUES 
-                  ('modo_ia', 'auto', 'Modo de IA: auto, manual, solo_faq', ?),
-                  ('limite_ia_por_usuario', '10', 'Cantidad máxima de respuestas IA por usuario por día', ?),
-                  ('horas_confirmacion_automatica', '24', 'Horas para confirmación automática si no hay respuesta', ?)
-              `, [ahora, ahora, ahora], (err) => {
-                db.close();
-                if (err) reject(err);
-                else resolve();
+                CREATE TABLE IF NOT EXISTS seguimientos (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  session_id TEXT NOT NULL,
+                  tipo TEXT NOT NULL CHECK(tipo IN ('primero', 'segundo')),
+                  fecha_envio TEXT NOT NULL,
+                  mensaje_enviado TEXT,
+                  respuesta_recibida INTEGER DEFAULT 0 CHECK(respuesta_recibida IN (0, 1)),
+                  fecha_respuesta TEXT,
+                  FOREIGN KEY (session_id) REFERENCES clientes(session_id)
+                )
+              `, (err) => {
+                if (err) {
+                  db.close();
+                  reject(err);
+                  return;
+                }
+                
+                // Crear tabla de historias publicadas
+                db.run(`
+                  CREATE TABLE IF NOT EXISTS historias_publicadas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nombre_archivo TEXT NOT NULL UNIQUE,
+                    ruta_completa TEXT NOT NULL,
+                    fecha_publicacion TEXT NOT NULL,
+                    dia_semana TEXT,
+                    hora_publicacion TEXT
+                  )
+                `, (err) => {
+                  if (err) {
+                    db.close();
+                    reject(err);
+                    return;
+                  }
+                  
+                  // Agregar columnas a clientes si no existen (estado_lead, ultimo_mensaje)
+                  db.all("PRAGMA table_info(clientes)", (err, rows) => {
+                    if (err) {
+                      console.log("⚠️  Error al verificar columnas de clientes:", err.message);
+                    } else if (rows && Array.isArray(rows)) {
+                      const columnas = rows.map(r => r.name);
+                      if (!columnas.includes('estado_lead')) {
+                        db.run('ALTER TABLE clientes ADD COLUMN estado_lead TEXT DEFAULT "info" CHECK(estado_lead IN ("info", "lead_tibio", "lead_caliente", "reservado"))', () => {});
+                      }
+                      if (!columnas.includes('ultimo_mensaje')) {
+                        db.run('ALTER TABLE clientes ADD COLUMN ultimo_mensaje TEXT', () => {});
+                      }
+                    }
+                    
+                    // Crear índices adicionales
+                    db.run('CREATE INDEX IF NOT EXISTS idx_clientes_estado_lead ON clientes(estado_lead)', () => {});
+                    db.run('CREATE INDEX IF NOT EXISTS idx_clientes_ultimo_mensaje ON clientes(ultimo_mensaje)', () => {});
+                    db.run('CREATE INDEX IF NOT EXISTS idx_seguimientos_session_id ON seguimientos(session_id)', () => {});
+                    db.run('CREATE INDEX IF NOT EXISTS idx_seguimientos_fecha_envio ON seguimientos(fecha_envio)', () => {});
+                    db.run('CREATE INDEX IF NOT EXISTS idx_historias_nombre ON historias_publicadas(nombre_archivo)', () => {});
+                    
+                    // Agregar valores por defecto a configuracion
+                    const ahora = new Date().toISOString();
+                    db.run(`
+                      INSERT OR IGNORE INTO configuracion (clave, valor, descripcion, actualizada)
+                      VALUES 
+                        ('modo_ia', 'auto', 'Modo de IA: auto, manual, solo_faq', ?),
+                        ('limite_ia_por_usuario', '10', 'Cantidad máxima de respuestas IA por usuario por día', ?),
+                        ('horas_confirmacion_automatica', '24', 'Horas para confirmación automática si no hay respuesta', ?)
+                    `, [ahora, ahora, ahora], (err) => {
+                      db.close();
+                      if (err) reject(err);
+                      else resolve();
+                    });
+                  });
+                });
               });
             });
           });
         });
       });
     });
+  });
+}
+
+/**
+ * Actualiza el estado de lead y último mensaje de un cliente
+ */
+async function actualizarEstadoLead(sessionId, estadoLead, ultimoMensaje = null) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const ahora = new Date().toISOString();
+    db.run(
+      'UPDATE clientes SET estado_lead = ?, ultimo_mensaje = ? WHERE session_id = ?',
+      [estadoLead, ultimoMensaje || ahora, sessionId],
+      (err) => {
+        db.close();
+        if (err) reject(err);
+        else resolve();
+      }
+    );
+  });
+}
+
+/**
+ * Registra un seguimiento enviado
+ */
+async function registrarSeguimiento(sessionId, tipo, mensajeEnviado) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const ahora = new Date().toISOString();
+    db.run(
+      'INSERT INTO seguimientos (session_id, tipo, fecha_envio, mensaje_enviado) VALUES (?, ?, ?, ?)',
+      [sessionId, tipo, ahora, mensajeEnviado],
+      (err) => {
+        db.close();
+        if (err) reject(err);
+        else resolve();
+      }
+    );
+  });
+}
+
+/**
+ * Verifica si ya se envió un seguimiento de un tipo específico a un cliente
+ */
+async function yaSeEnvioSeguimiento(sessionId, tipo) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.get(
+      'SELECT COUNT(*) as count FROM seguimientos WHERE session_id = ? AND tipo = ?',
+      [sessionId, tipo],
+      (err, row) => {
+        db.close();
+        if (err) reject(err);
+        else resolve((row && row.count > 0) || false);
+      }
+    );
+  });
+}
+
+/**
+ * Obtiene todos los seguimientos de un cliente
+ */
+async function obtenerSeguimientos(sessionId) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.all(
+      'SELECT * FROM seguimientos WHERE session_id = ? ORDER BY fecha_envio DESC',
+      [sessionId],
+      (err, rows) => {
+        db.close();
+        if (err) reject(err);
+        else resolve(rows || []);
+      }
+    );
+  });
+}
+
+/**
+ * Marca que un cliente respondió a un seguimiento
+ */
+async function marcarRespuestaSeguimiento(sessionId) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const ahora = new Date().toISOString();
+    db.run(
+      'UPDATE seguimientos SET respuesta_recibida = 1, fecha_respuesta = ? WHERE session_id = ? AND respuesta_recibida = 0',
+      [ahora, sessionId],
+      (err) => {
+        db.close();
+        if (err) reject(err);
+        else resolve();
+      }
+    );
+  });
+}
+
+/**
+ * Obtiene clientes que necesitan seguimiento (info o lead_tibio, sin respuesta reciente)
+ */
+async function obtenerClientesParaSeguimiento(horasMinimas = 12, horasMaximas = 24) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const ahora = new Date();
+    const fechaMinima = new Date(ahora.getTime() - horasMaximas * 60 * 60 * 1000).toISOString();
+    const fechaMaxima = new Date(ahora.getTime() - horasMinimas * 60 * 60 * 1000).toISOString();
+    
+    db.all(`
+      SELECT c.*, 
+        (SELECT COUNT(*) FROM seguimientos s WHERE s.session_id = c.session_id) as total_seguimientos,
+        (SELECT COUNT(*) FROM seguimientos s WHERE s.session_id = c.session_id AND s.tipo = 'primero') as seguimientos_primero,
+        (SELECT COUNT(*) FROM seguimientos s WHERE s.session_id = c.session_id AND s.tipo = 'segundo') as seguimientos_segundo
+      FROM clientes c
+      WHERE c.estado_lead IN ('info', 'lead_tibio')
+        AND c.ultimo_mensaje >= ? 
+        AND c.ultimo_mensaje <= ?
+        AND (SELECT COUNT(*) FROM seguimientos s WHERE s.session_id = c.session_id AND s.respuesta_recibida = 0) = 0
+      ORDER BY c.ultimo_mensaje ASC
+    `, [fechaMinima, fechaMaxima], (err, rows) => {
+      db.close();
+      if (err) reject(err);
+      else resolve(rows || []);
+    });
+  });
+}
+
+/**
+ * Obtiene clientes que necesitan segundo seguimiento (48-72h después del primero)
+ */
+async function obtenerClientesParaSegundoSeguimiento() {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const ahora = new Date();
+    const fechaMinima = new Date(ahora.getTime() - 72 * 60 * 60 * 1000).toISOString();
+    const fechaMaxima = new Date(ahora.getTime() - 48 * 60 * 60 * 1000).toISOString();
+    
+    db.all(`
+      SELECT DISTINCT c.*,
+        (SELECT COUNT(*) FROM seguimientos s WHERE s.session_id = c.session_id AND s.tipo = 'primero') as tiene_primero,
+        (SELECT COUNT(*) FROM seguimientos s WHERE s.session_id = c.session_id AND s.tipo = 'segundo') as tiene_segundo,
+        (SELECT MAX(fecha_envio) FROM seguimientos s WHERE s.session_id = c.session_id AND s.tipo = 'primero') as fecha_primer_seguimiento
+      FROM clientes c
+      INNER JOIN seguimientos s ON s.session_id = c.session_id
+      WHERE c.estado_lead IN ('info', 'lead_tibio')
+        AND s.tipo = 'primero'
+        AND s.fecha_envio >= ? 
+        AND s.fecha_envio <= ?
+        AND s.respuesta_recibida = 0
+        AND (SELECT COUNT(*) FROM seguimientos s2 WHERE s2.session_id = c.session_id AND s2.tipo = 'segundo') = 0
+      ORDER BY s.fecha_envio ASC
+    `, [fechaMinima, fechaMaxima], (err, rows) => {
+      db.close();
+      if (err) reject(err);
+      else resolve(rows || []);
+    });
+  });
+}
+
+/**
+ * Registra una historia publicada
+ */
+async function registrarHistoriaPublicada(nombreArchivo, rutaCompleta, diaSemana = null, horaPublicacion = null) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    const ahora = new Date().toISOString();
+    db.run(
+      'INSERT OR IGNORE INTO historias_publicadas (nombre_archivo, ruta_completa, fecha_publicacion, dia_semana, hora_publicacion) VALUES (?, ?, ?, ?, ?)',
+      [nombreArchivo, rutaCompleta, ahora, diaSemana, horaPublicacion],
+      (err) => {
+        db.close();
+        if (err) reject(err);
+        else resolve();
+      }
+    );
+  });
+}
+
+/**
+ * Verifica si una historia ya fue publicada
+ */
+async function historiaYaPublicada(nombreArchivo) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.get(
+      'SELECT COUNT(*) as count FROM historias_publicadas WHERE nombre_archivo = ?',
+      [nombreArchivo],
+      (err, row) => {
+        db.close();
+        if (err) reject(err);
+        else resolve((row && row.count > 0) || false);
+      }
+    );
+  });
+}
+
+/**
+ * Obtiene todas las historias publicadas
+ */
+async function obtenerHistoriasPublicadas() {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.all(
+      'SELECT * FROM historias_publicadas ORDER BY fecha_publicacion DESC',
+      [],
+      (err, rows) => {
+        db.close();
+        if (err) reject(err);
+        else resolve(rows || []);
+      }
+    );
   });
 }
 
@@ -2059,6 +2328,16 @@ module.exports = {
   obtenerInteraccionesIAHoy,
   puedeUsarIA,
   migrarBaseDatos,
+  actualizarEstadoLead,
+  registrarSeguimiento,
+  yaSeEnvioSeguimiento,
+  obtenerSeguimientos,
+  marcarRespuestaSeguimiento,
+  obtenerClientesParaSeguimiento,
+  obtenerClientesParaSegundoSeguimiento,
+  registrarHistoriaPublicada,
+  historiaYaPublicada,
+  obtenerHistoriasPublicadas,
   DB_PATH
 };
 
