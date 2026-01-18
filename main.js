@@ -298,16 +298,90 @@ wppconnect
     // Manejar mensajes
     client.onMessage(async (message) => {
       try {
-        // Ignorar mensajes del bot mismo, estados, grupos, etc.
+        // Ignorar mensajes de estados, grupos, etc.
         if (
           message.from === "status@broadcast" ||
           message.isGroupMsg ||
-          message.fromMe ||
           !message.body
         ) {
           return;
         }
         
+        // ============================================
+        // CAPTURAR MENSAJES DEL ADMIN ENVIADOS A OTROS
+        // ============================================
+        if (message.fromMe) {
+          // Obtener el destinatario del mensaje (el chat al que se envió)
+          const destinatario = message.to || message.chatId || null;
+          const mensajeTexto = message.body.trim().toLowerCase();
+          
+          if (!destinatario || !mensajeTexto || mensajeTexto.length < 2) {
+            return;
+          }
+          
+          // Intentar obtener el userId del admin desde el mensaje
+          // En wppconnect, cuando fromMe=true, message.from puede ser el número del admin
+          // o podemos obtenerlo del perfil del dispositivo
+          let adminUserId = message.from;
+          
+          // Si message.from no tiene formato válido, intentar obtenerlo del cliente
+          if (!adminUserId || (!adminUserId.includes('@c.us') && !adminUserId.includes('@lid'))) {
+            try {
+              const profile = await client.getHostDevice();
+              if (profile && profile.wid) {
+                adminUserId = profile.wid.id;
+              }
+            } catch (error) {
+              // Si falla, usar el primer admin de la configuración
+              adminUserId = config.ADMIN_NUMBERS[0];
+            }
+          }
+          
+          // Verificar si el remitente es administrador
+          const esAdmin = adminHandler.esAdministrador(adminUserId);
+          
+          if (esAdmin && destinatario) {
+            // Detectar comando "desactivar bot"
+            if (mensajeTexto === "desactivar bot" || mensajeTexto === "bot off") {
+              try {
+                // Guardar en base de datos que este chat tiene bot desactivado
+                await db.establecerConfiguracion(
+                  `bot_desactivado_${destinatario}`, 
+                  '1', 
+                  `Bot desactivado para chat: ${destinatario}`
+                );
+                
+                console.log(`🔧 Bot desactivado para chat: ${destinatario} por admin ${adminUserId}`);
+                return;
+              } catch (error) {
+                console.error(`❌ Error al desactivar bot para ${destinatario}:`, error.message);
+              }
+            }
+            
+            // Detectar comando "activar bot"
+            if (mensajeTexto === "activar bot" || mensajeTexto === "bot on") {
+              try {
+                await db.establecerConfiguracion(
+                  `bot_desactivado_${destinatario}`, 
+                  '0', 
+                  `Bot activado para chat: ${destinatario}`
+                );
+                
+                console.log(`🔧 Bot activado para chat: ${destinatario} por admin ${adminUserId}`);
+                return;
+              } catch (error) {
+                console.error(`❌ Error al activar bot para ${destinatario}:`, error.message);
+              }
+            }
+          }
+          
+          // Si no es admin o no es un comando especial, ignorar el mensaje
+          return;
+        }
+        
+        // ============================================
+        // PROCESAR MENSAJES RECIBIDOS (código normal)
+        // ============================================
         const userId = message.from;
         const mensajeTexto = message.body.trim();
         
@@ -316,23 +390,21 @@ wppconnect
           return;
         }
         
-        // ID de prueba permitido - Solo este ID puede interactuar con el bot
-        const ID_PRUEBA_PERMITIDO = '96439782895654@lid';
+        // Verificar si el bot está desactivado para este chat específico
+        const botDesactivadoChat = await db.obtenerConfiguracion(`bot_desactivado_${userId}`);
+        if (botDesactivadoChat === '1') {
+          console.log(`🚫 Bot desactivado para este chat: ${userId}`);
+          return; // Ignorar mensaje
+        }
         
         // Verificar si es administrador - Los administradores solo envían comandos, no usan IA
         const esAdmin = adminHandler.esAdministrador(userId);
         
-        // Si no es administrador ni el ID de prueba, ignorar completamente
-        if (!esAdmin && userId !== ID_PRUEBA_PERMITIDO) {
-          console.log(`🚫 Mensaje ignorado de ${userId} (no es admin ni ID de prueba)`);
-          return; // Ignorar sin responder
-        }
-        
-        // Verificar si el bot está desactivado (solo para no-admins)
+        // Verificar si el bot está desactivado globalmente (solo para no-admins)
         if (!esAdmin) {
           const botActivo = await db.obtenerConfiguracion('flag_bot_activo');
           if (botActivo === '0') {
-            console.log(`🚫 Bot desactivado - Mensaje ignorado de ${userId}`);
+            console.log(`🚫 Bot desactivado globalmente - Mensaje ignorado de ${userId}`);
             return; // Ignorar sin responder
           }
         }

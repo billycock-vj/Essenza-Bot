@@ -3,8 +3,9 @@
  */
 
 const { logMessage } = require('../utils/logger');
-const { enviarMensajeSeguro, extraerNumero, normalizarTelefono } = require('./messageHelpers');
+const { enviarMensajeSeguro, enviarImagenSeguro, extraerNumero, normalizarTelefono } = require('./messageHelpers');
 const { procesarImagenCita } = require('./image');
+const { crearReservaYGenerarImagen } = require('./reservaCompleta');
 const db = require('../services/database');
 const storage = require('../services/storage');
 const config = require('../config');
@@ -212,8 +213,12 @@ async function obtenerCitasDelDia(fecha = null) {
  * @returns {Promise<boolean>} - true si se procesó un comando, false si no
  */
 async function procesarComandosAdmin(client, message, userId, text, textLower, estadisticas, iaGlobalDesactivada) {
+  // Log inmediato para confirmar que el mensaje llegó
+  console.log(`\n📨 [ADMIN] Mensaje recibido: "${text}" de ${userId}`);
+  
   // Verificar si es administrador
   if (!esAdministrador(userId)) {
+    console.log(`❌ [ADMIN] No es administrador: ${userId}`);
     return false;
   }
 
@@ -229,6 +234,413 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
     console.log(`\n📷 IMAGEN RECIBIDA DE ADMINISTRADOR - PROCESANDO...\n`);
     await procesarImagenCita(client, message, userId);
     return true;
+  }
+
+  // Comando: Crear reserva (flujo interactivo paso a paso)
+  if (textLower === "crear reserva" || textLower === "crear cita") {
+    // Inicializar datos de reserva
+    storage.setUserData(userId, {});
+    storage.setUserState(userId, 'creando_reserva_fecha');
+    
+    await enviarMensajeSeguro(
+      client,
+      userId,
+      `📝 *Crear Nueva Reserva*\n\n` +
+      `Te guiaré paso a paso. Responde cada pregunta.\n\n` +
+      `1️⃣ *¿Qué fecha?*\n` +
+      `   Formato: DD/MM/YYYY\n` +
+      `   Ejemplo: 10/01/2026\n\n` +
+      `Escribe "cancelar" en cualquier momento para cancelar.`
+    );
+    
+    return true;
+  }
+
+  // Flujo interactivo paso a paso para crear reserva
+  const userState = storage.getUserState(userId);
+  console.log(`🔍 [ADMIN] Estado del usuario: ${userState || 'sin estado'}`);
+  
+  if (userState && userState.startsWith('creando_reserva_')) {
+    console.log(`\n🔄 [FLUJO] Estado detectado: ${userState}`);
+    console.log(`🔄 [FLUJO] Mensaje recibido: "${text}"`);
+    console.log(`🔄 [FLUJO] Tipo de mensaje: ${typeof text}`);
+    
+    // Si el usuario envía "cancelar", cancelar la operación
+    if (textLower === "cancelar") {
+      storage.setUserState(userId, null);
+      storage.setUserData(userId, null);
+      await enviarMensajeSeguro(client, userId, "❌ Operación cancelada.");
+      return true;
+    }
+
+    // Obtener datos del storage en cada iteración para asegurar que estén actualizados
+    let datosReserva = storage.getUserData(userId) || {};
+    console.log(`🔄 [FLUJO] Datos en storage:`, Object.keys(datosReserva));
+
+    switch (userState) {
+      case 'creando_reserva_fecha': {
+        // Validar y guardar fecha - acepta DD/MM/YYYY o DD/MM (año actual)
+        const fechaMatchCompleta = text.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+        const fechaMatchCorta = text.match(/(\d{1,2}\/\d{1,2})/);
+        
+        let fechaTexto = null;
+        if (fechaMatchCompleta) {
+          fechaTexto = fechaMatchCompleta[1];
+        } else if (fechaMatchCorta) {
+          // Agregar año actual si no se proporciona
+          const añoActual = new Date().getFullYear();
+          fechaTexto = `${fechaMatchCorta[1]}/${añoActual}`;
+        }
+        
+        if (!fechaTexto) {
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            "❌ Formato de fecha inválido.\n\n" +
+            "Por favor, usa el formato: DD/MM o DD/MM/YYYY\n" +
+            "Ejemplos: 10/01 o 10/01/2026"
+          );
+          return true;
+        }
+        datosReserva.fechaTexto = fechaTexto;
+        storage.setUserData(userId, datosReserva);
+        storage.setUserState(userId, 'creando_reserva_hora');
+        await enviarMensajeSeguro(
+          client,
+          userId,
+          `✅ Fecha: ${datosReserva.fechaTexto}\n\n` +
+          `2️⃣ *¿Qué hora?*\n` +
+          `   Formato: HH:MM AM/PM, HH AM/PM, o 24h\n` +
+          `   Ejemplos: 4:00 pm, 4 pm, 16:00, 2:30 pm`
+        );
+        return true;
+      }
+
+      case 'creando_reserva_hora': {
+        // Validar y guardar hora - acepta HH:MM AM/PM, HH AM/PM, o 24h
+        // Formato 1: "4:00 pm" o "16:00"
+        let horaMatch = text.match(/(\d{1,2}):(\d{2})\s*(am|pm|AM|PM)?/i);
+        // Formato 2: "4 pm" o "4am" (sin minutos, asumir :00)
+        if (!horaMatch) {
+          horaMatch = text.match(/(\d{1,2})\s*(am|pm|AM|PM)/i);
+          if (horaMatch) {
+            // Agregar minutos :00 si no están presentes
+            horaMatch = [horaMatch[0], horaMatch[1], '00', horaMatch[2]];
+          }
+        }
+        
+        if (!horaMatch) {
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            "❌ Formato de hora inválido.\n\n" +
+            "Por favor, usa el formato: HH:MM AM/PM, HH AM/PM, o 24h\n" +
+            "Ejemplos: 4:00 pm, 4 pm, 16:00, 2:30 pm"
+          );
+          return true;
+        }
+        
+        let hora = parseInt(horaMatch[1], 10);
+        const minutos = horaMatch[2] || '00';
+        const periodo = horaMatch[3] ? horaMatch[3].toLowerCase() : null;
+        
+        if (periodo === 'pm' && hora !== 12) hora += 12;
+        else if (periodo === 'am' && hora === 12) hora = 0;
+        
+        datosReserva.hora = `${hora.toString().padStart(2, '0')}:${minutos}`;
+        storage.setUserData(userId, datosReserva);
+        storage.setUserState(userId, 'creando_reserva_cliente');
+        await enviarMensajeSeguro(
+          client,
+          userId,
+          `✅ Hora: ${text}\n\n` +
+          `3️⃣ *¿Nombre del cliente?*`
+        );
+        return true;
+      }
+
+      case 'creando_reserva_cliente':
+        datosReserva.cliente = text.trim();
+        if (!datosReserva.cliente) {
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            "❌ El nombre del cliente no puede estar vacío."
+          );
+          return true;
+        }
+        storage.setUserData(userId, datosReserva);
+        storage.setUserState(userId, 'creando_reserva_telefono');
+        await enviarMensajeSeguro(
+          client,
+          userId,
+          `✅ Cliente: ${datosReserva.cliente}\n\n` +
+          `4️⃣ *¿Teléfono?*`
+        );
+        return true;
+
+      case 'creando_reserva_telefono':
+        const telefono = text.trim().replace(/\D/g, '');
+        if (telefono.length < 9) {
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            "❌ Teléfono inválido. Debe tener al menos 9 dígitos.\n\n" +
+            "Ejemplo: 991381501"
+          );
+          return true;
+        }
+        datosReserva.telefono = telefono;
+        storage.setUserData(userId, datosReserva);
+        storage.setUserState(userId, 'creando_reserva_servicio');
+        
+        // Listar servicios disponibles
+        try {
+          const servicios = await db.listarServicios();
+          if (servicios.length === 0) {
+            await enviarMensajeSeguro(
+              client,
+              userId,
+              `✅ Teléfono: ${datosReserva.telefono}\n\n` +
+              `5️⃣ *¿Servicio?*\n\n` +
+              `⚠️ No hay servicios disponibles.`
+            );
+            return true;
+          }
+          
+          // Guardar servicios en los datos para validación posterior
+          datosReserva.serviciosDisponibles = servicios;
+          storage.setUserData(userId, datosReserva);
+          
+          // Mostrar todos los servicios con números de 2 dígitos en corchetes
+          let mensajeServicios = `✅ Teléfono: ${datosReserva.telefono}\n\n`;
+          mensajeServicios += `5️⃣ *¿Servicio?*\n\n`;
+          mensajeServicios += `📋 *Servicios disponibles:*\n\n`;
+          
+          servicios.forEach((servicio, index) => {
+            // Asegurar formato de 2 dígitos: 01, 02, 03, etc.
+            const numero = index + 1;
+            // Forzar formato de 2 dígitos siempre con corchetes
+            const numeroFormateado = String(numero).padStart(2, '0');
+            mensajeServicios += `[${numeroFormateado}] ${servicio.nombre}\n`;
+            console.log(`[DEBUG] Servicio ${index + 1} formateado como: "[${numeroFormateado}]"`);
+          });
+          
+          mensajeServicios += `\nEscribe el *número* del servicio que deseas (01, 02, 03, etc.).`;
+          
+          await enviarMensajeSeguro(client, userId, mensajeServicios);
+        } catch (error) {
+          logMessage("ERROR", "Error al listar servicios", { error: error.message });
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            `✅ Teléfono: ${datosReserva.telefono}\n\n` +
+            `5️⃣ *¿Servicio?*\n\n` +
+            `⚠️ Error al cargar servicios.`
+          );
+        }
+        return true;
+
+      case 'creando_reserva_servicio': {
+        // Obtener datos actualizados del storage en cada iteración
+        datosReserva = storage.getUserData(userId) || {};
+        
+        const textoIngresado = text.trim();
+        console.log(`\n🔍 [SERVICIO] Procesando selección: "${textoIngresado}"`);
+        console.log(`📋 [SERVICIO] Estado actual: ${userState}`);
+        
+        if (!textoIngresado) {
+          console.log(`❌ [SERVICIO] Texto vacío`);
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            "❌ Debes escribir un número de 2 dígitos para elegir un servicio.\n\n" +
+            "Ejemplo: 01, 02, 03, etc."
+          );
+          return true;
+        }
+        
+        // Obtener servicios disponibles del storage primero
+        let servicios = datosReserva.serviciosDisponibles || [];
+        console.log(`📋 [SERVICIO] Servicios en storage: ${servicios.length}`);
+        
+        // Si no hay servicios en el storage, cargarlos de la BD
+        if (servicios.length === 0) {
+          console.log(`⚠️ [SERVICIO] No hay servicios en storage, cargando de BD...`);
+          try {
+            servicios = await db.listarServicios();
+            console.log(`✅ [SERVICIO] Servicios cargados: ${servicios.length}`);
+            datosReserva.serviciosDisponibles = servicios;
+            storage.setUserData(userId, datosReserva);
+          } catch (error) {
+            console.error(`❌ [SERVICIO] Error al cargar servicios:`, error.message);
+            logMessage("ERROR", "Error al cargar servicios", { error: error.message });
+            await enviarMensajeSeguro(
+              client,
+              userId,
+              "❌ Error al cargar servicios. Por favor, intenta nuevamente."
+            );
+            return true;
+          }
+        }
+        
+        // Validar que sea un número de 2 dígitos (01-99)
+        if (!/^\d{2}$/.test(textoIngresado)) {
+          console.log(`❌ [SERVICIO] No es un número de 2 dígitos: "${textoIngresado}"`);
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            `❌ Debes escribir un número de 2 dígitos (01, 02, 03, etc.) para elegir un servicio.\n\n` +
+            `Ejemplo: 01, 02, 03, etc.`
+          );
+          return true;
+        }
+        
+        const numeroSeleccionado = parseInt(textoIngresado, 10);
+        const indiceSeleccionado = numeroSeleccionado - 1; // 01 -> 0, 02 -> 1, etc.
+        
+        if (indiceSeleccionado < 0 || indiceSeleccionado >= servicios.length) {
+          const ultimoNumero = String(servicios.length).padStart(2, '0');
+          console.log(`❌ [SERVICIO] Número fuera de rango: ${numeroSeleccionado} (rango: 01-${ultimoNumero})`);
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            `❌ El número "${textoIngresado}" está fuera de rango.\n\n` +
+            `Debe estar entre 01 y ${ultimoNumero}.\n` +
+            `Escribe un número de la lista mostrada.`
+          );
+          return true;
+        }
+        
+        // Servicio seleccionado
+        const servicioSeleccionado = servicios[indiceSeleccionado];
+        console.log(`✅ [SERVICIO] Servicio seleccionado: ${servicioSeleccionado.nombre}`);
+        
+        datosReserva.servicio = servicioSeleccionado.nombre;
+        datosReserva.precio = servicioSeleccionado.precio;
+        datosReserva.servicioId = servicioSeleccionado.id;
+        
+        storage.setUserData(userId, datosReserva);
+        storage.setUserState(userId, 'creando_reserva_deposito');
+        
+        await enviarMensajeSeguro(
+          client,
+          userId,
+          `✅ Servicio: ${datosReserva.servicio}\n` +
+          `💰 Precio: S/ ${datosReserva.precio}\n\n` +
+          `6️⃣ *¿Depósito?*\n` +
+          `   Escribe el monto del depósito`
+        );
+        console.log(`✅ [SERVICIO] Respuesta enviada correctamente\n`);
+        return true;
+      }
+
+      case 'creando_reserva_deposito': {
+        // El depósito siempre debe ser especificado, no hay valor por defecto
+        const depositoNum = parseFloat(text.replace(/[^\d.,]/g, '').replace(',', '.'));
+        if (isNaN(depositoNum) || depositoNum < 0) {
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            "❌ Depósito inválido. Por favor, escribe un número válido.\n\n" +
+            "Ejemplo: 40, 20, 50"
+          );
+          return true;
+        }
+        datosReserva.deposito = depositoNum;
+        // Todas las reservas se crean como "Pendiente" por defecto
+        datosReserva.estado = 'Pendiente';
+        
+        // Construir el texto completo para el parser y crear la reserva directamente
+        // Necesitamos agregar el día de la semana a la fecha
+        const fechaMatchEstado = datosReserva.fechaTexto.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+        let fechaCompleta = datosReserva.fechaTexto;
+        
+        if (fechaMatchEstado) {
+          const [, diaFecha, mesFecha, añoFecha] = fechaMatchEstado;
+          const fechaObj = new Date(parseInt(añoFecha), parseInt(mesFecha) - 1, parseInt(diaFecha));
+          const diasSemana = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+          const diaSemana = diasSemana[fechaObj.getDay()];
+          fechaCompleta = `${diaSemana} ${datosReserva.fechaTexto}`;
+        }
+        
+        // Convertir hora de 24h a formato AM/PM para el texto
+        const [horas24, minutosHora] = datosReserva.hora.split(':');
+        let horas12 = parseInt(horas24, 10);
+        let periodoHora = 'AM';
+        if (horas12 === 0) {
+          horas12 = 12;
+        } else if (horas12 === 12) {
+          periodoHora = 'PM';
+        } else if (horas12 > 12) {
+          horas12 = horas12 - 12;
+          periodoHora = 'PM';
+        }
+        const horaTexto = `${horas12}:${minutosHora} ${periodoHora}`;
+        
+        const textoCompleto = `${fechaCompleta} ${horaTexto}\n` +
+          `Cliente: ${datosReserva.cliente}\n` +
+          `Teléfono: ${datosReserva.telefono}\n` +
+          `Servicio: ${datosReserva.servicio}\n` +
+          `Precio: ${datosReserva.precio}\n` +
+          `Depósito: ${datosReserva.deposito}\n` +
+          `Estado: ${datosReserva.estado}`;
+
+        try {
+          console.log(`\n📝 PROCESANDO DATOS DE RESERVA (FLUJO INTERACTIVO)...\n`);
+          
+          const resultado = await crearReservaYGenerarImagen(textoCompleto, userId);
+          
+          // Limpiar estado y datos
+          storage.setUserState(userId, null);
+          storage.setUserData(userId, null);
+          
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            `✅ *Reserva creada exitosamente*\n\n` +
+            `🆔 ID: ${resultado.idReserva}\n` +
+            `👤 Cliente: ${resultado.reserva.userName}\n` +
+            `📱 Teléfono: ${extraerNumero(resultado.reserva.userId)}\n` +
+            `💆 Servicio: ${resultado.reserva.servicio}\n` +
+            `📅 Fecha: ${resultado.reserva.fechaHora.toLocaleDateString('es-PE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}\n` +
+            `⏰ Hora: ${resultado.reserva.fechaHora.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' })}\n` +
+            `📊 Estado: ${resultado.reserva.estado}\n\n` +
+            `📷 Imagen de confirmación:`
+          );
+          
+          await enviarImagenSeguro(
+            client,
+            userId,
+            resultado.imagenBuffer,
+            `✅ *Confirmación de Cita #${resultado.idReserva}*`
+          );
+          
+          logMessage("SUCCESS", "Reserva creada y imagen enviada (flujo interactivo)", {
+            idReserva: resultado.idReserva,
+            cliente: resultado.reserva.userId
+          });
+          
+          return true;
+        } catch (error) {
+          storage.setUserState(userId, null);
+          storage.setUserData(userId, null);
+          
+          logMessage("ERROR", "Error al crear reserva (flujo interactivo)", {
+            error: error.message,
+            stack: error.stack
+          });
+          
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            `❌ *Error al crear reserva*\n\n${error.message}\n\n` +
+            `Escribe "crear reserva" para intentar nuevamente.`
+          );
+          return true;
+        }
+      }
+    }
   }
 
   // Comando: Estadísticas
@@ -492,24 +904,116 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
     if (idMatch) {
       const id = parseInt(idMatch[1]);
       try {
+        // Obtener la reserva antes de confirmarla para verificar que existe
+        const reservaAntes = await db.obtenerDetalleReserva(id);
+        if (!reservaAntes) {
+          await enviarMensajeSeguro(client, userId, `❌ No se encontró una cita con ID ${id}`);
+          return true;
+        }
+
+        // Verificar si ya está confirmada
+        if (reservaAntes.estado === 'confirmada') {
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            `ℹ️ La cita #${id} ya está confirmada.`
+          );
+          return true;
+        }
+
+        // Confirmar la reserva
         const exito = await db.confirmarReserva(id);
         if (exito) {
           const reserva = await db.obtenerDetalleReserva(id);
+          
+          // Preparar datos para generar imagen actualizada
+          const fechaHora = new Date(reserva.fechaHora);
+          const diasSemana = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+          const diaSemana = diasSemana[fechaHora.getDay()];
+          const fechaTexto = `${diaSemana} ${fechaHora.getDate().toString().padStart(2, '0')}/${(fechaHora.getMonth() + 1).toString().padStart(2, '0')}/${fechaHora.getFullYear()}`;
+          
+          // Convertir hora a formato AM/PM
+          let horas = fechaHora.getHours();
+          let minutos = fechaHora.getMinutes();
+          let periodo = 'AM';
+          if (horas === 0) {
+            horas = 12;
+          } else if (horas === 12) {
+            periodo = 'PM';
+          } else if (horas > 12) {
+            horas = horas - 12;
+            periodo = 'PM';
+          }
+          const horaTexto = `${horas}:${minutos.toString().padStart(2, '0')} ${periodo}`;
+          
+          const datosParaImagen = {
+            fechaTexto: fechaTexto,
+            hora: `${fechaHora.getHours().toString().padStart(2, '0')}:${minutos.toString().padStart(2, '0')}`,
+            cliente: reserva.userName,
+            telefono: extraerNumero(reserva.userId),
+            servicio: reserva.servicio,
+            precio: reserva.precio || 'A revisión',
+            deposito: reserva.deposito || 0,
+            estado: 'Confirmada'
+          };
+
+          // Generar imagen actualizada
+          const { generarImagenCita } = require('./imageGenerator');
+          let imagenBuffer = null;
+          try {
+            imagenBuffer = await generarImagenCita(datosParaImagen, id);
+          } catch (error) {
+            logMessage("WARNING", "Error al generar imagen al confirmar cita", {
+              error: error.message,
+              idReserva: id
+            });
+            // Continuar sin imagen si hay error
+          }
+
+          // Enviar confirmación al admin
           await enviarMensajeSeguro(
             client,
             userId,
             `✅ *Cita Confirmada*\n\n` +
-            `ID: ${id}\n` +
+            `🆔 ID: ${id}\n` +
             `👤 Cliente: ${reserva.userName}\n` +
-            `📅 Fecha/Hora: ${reserva.fechaHora.toLocaleString('es-PE')}\n` +
-            `💆 Servicio: ${reserva.servicio}`
+            `📱 Teléfono: ${extraerNumero(reserva.userId)}\n` +
+            `📅 Fecha: ${fechaHora.toLocaleDateString('es-PE', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}\n` +
+            `⏰ Hora: ${fechaHora.toLocaleTimeString('es-PE', { hour: '2-digit', minute: '2-digit' })}\n` +
+            `💆 Servicio: ${reserva.servicio}\n` +
+            `💰 Depósito: S/ ${reserva.deposito || 0}\n` +
+            `📊 Estado: Confirmada${imagenBuffer ? '\n\n📷 Imagen actualizada:' : ''}`
           );
+
+          // Enviar imagen si se generó correctamente
+          if (imagenBuffer) {
+            await enviarImagenSeguro(
+              client,
+              userId,
+              imagenBuffer,
+              `✅ *Cita Confirmada #${id}*\n\nCliente: ${reserva.userName}`
+            );
+          }
+
+          logMessage("SUCCESS", "Cita confirmada por administrador", {
+            idReserva: id,
+            cliente: reserva.userId,
+            adminId: extraerNumero(userId)
+          });
         } else {
-          await enviarMensajeSeguro(client, userId, `❌ No se encontró una cita con ID ${id}`);
+          await enviarMensajeSeguro(client, userId, `❌ No se pudo confirmar la cita con ID ${id}`);
         }
       } catch (error) {
-        logMessage("ERROR", "Error al confirmar cita", { error: error.message });
-        await enviarMensajeSeguro(client, userId, `❌ Error al confirmar la cita: ${error.message}`);
+        logMessage("ERROR", "Error al confirmar cita", { 
+          error: error.message,
+          stack: error.stack,
+          idReserva: id
+        });
+        await enviarMensajeSeguro(
+          client,
+          userId,
+          `❌ Error al confirmar la cita: ${error.message}`
+        );
       }
       return true;
     }
@@ -879,6 +1383,7 @@ async function mostrarListaComandos(client, userId) {
     `• reporte mensual - Reporte mensual de actividad\n` +
     `• top servicios / servicios mas solicitados - Servicios más solicitados\n\n` +
     `📅 *GESTIÓN DE CITAS*\n` +
+    `• crear reserva / crear cita - Crear nueva reserva con imagen\n` +
     `• confirmar cita [id] - Confirmar una cita\n` +
     `• cancelar cita [id] - Cancelar una cita\n` +
     `• modificar cita [id] - Modificar una cita\n` +
@@ -905,9 +1410,46 @@ async function mostrarListaComandos(client, userId) {
   }
 }
 
+/**
+ * Detecta si un texto tiene formato de cita
+ * @param {string} texto - Texto a analizar
+ * @returns {boolean} - true si parece ser un formato de cita
+ */
+function detectarFormatoCita(texto) {
+  if (!texto || typeof texto !== 'string') {
+    return false;
+  }
+
+  const lineas = texto.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  
+  // Debe contener al menos: fecha, hora, cliente, teléfono, servicio
+  const tieneFecha = /(domingo|lunes|martes|miércoles|miercoles|jueves|viernes|sábado|sabado)\s+\d{1,2}\/\d{1,2}/i.test(texto) ||
+                     /\d{1,2}\/\d{1,2}\/\d{4}/.test(texto) ||
+                     /\d{1,2}\/\d{1,2}/.test(texto);
+  
+  const tieneHora = /\d{1,2}:\d{2}\s*(am|pm|AM|PM)/i.test(texto) ||
+                    /\d{1,2}:\d{2}/.test(texto);
+  
+  const tieneCliente = /cliente:?\s+[a-záéíóúñ\s]+/i.test(texto);
+  
+  const tieneTelefono = /(teléfono|telefono):?\s*\d+/.test(texto);
+  
+  // Buscar servicio en todas las líneas (puede venir con o sin prefijo "Servicio:")
+  let tieneServicio = /servicio:?\s+[a-záéíóúñ\s\d]+/i.test(texto);
+  
+  // Si no tiene prefijo "Servicio:", buscar líneas que empiecen con número seguido de texto
+  // Ej: "2 Masajes compuestos"
+  if (!tieneServicio) {
+    tieneServicio = lineas.some(linea => /^\d+\s+[a-záéíóúñ\s]+/i.test(linea));
+  }
+
+  return tieneFecha && tieneHora && tieneCliente && tieneTelefono && tieneServicio;
+}
+
 module.exports = {
   esAdministrador,
   procesarComandosAdmin,
   obtenerEstadisticas,
-  obtenerCitasDelDia
+  obtenerCitasDelDia,
+  detectarFormatoCita
 };

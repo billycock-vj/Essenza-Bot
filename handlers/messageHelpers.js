@@ -252,10 +252,127 @@ function extractName(text) {
   return null;
 }
 
+/**
+ * Envía una imagen de forma segura
+ * @param {Object} client - Cliente de wppconnect
+ * @param {string} userId - ID del usuario destino
+ * @param {Buffer} imagenBuffer - Buffer de la imagen
+ * @param {string} caption - Texto opcional para la imagen
+ * @returns {Promise<boolean>} - true si se envió correctamente
+ */
+async function enviarImagenSeguro(client, userId, imagenBuffer, caption = '') {
+  try {
+    // Validar que userId existe y tiene formato correcto
+    if (!userId || typeof userId !== "string") {
+      logMessage("ERROR", "Intento de enviar imagen con userId inválido", {
+        userId: userId
+      });
+      return false;
+    }
+
+    // Asegurar que el userId tiene el formato correcto (@c.us o @lid)
+    let numeroFormateado = userId.trim();
+
+    // Si ya tiene @c.us o @lid, mantenerlo
+    if (
+      numeroFormateado.endsWith("@c.us") ||
+      numeroFormateado.endsWith("@lid")
+    ) {
+      // Ya está en formato correcto, no hacer nada
+    } else {
+      // Si no termina con @c.us o @lid, agregar @c.us
+      numeroFormateado = numeroFormateado.replace(/@.*$/, "");
+      numeroFormateado = numeroFormateado + "@c.us";
+    }
+
+    // Validar que el número tiene formato válido
+    const esFormatoValido = validarFormatoUserId(numeroFormateado);
+
+    if (!esFormatoValido) {
+      logMessage("ERROR", "Número de WhatsApp inválido para enviar imagen", {
+        original: userId,
+        formateado: numeroFormateado,
+      });
+      return false;
+    }
+
+    // Validar que NO es un estado
+    if (
+      numeroFormateado.includes("status") ||
+      numeroFormateado.includes("broadcast")
+    ) {
+      return false;
+    }
+
+    // Enviar la imagen usando wppconnect
+    // wppconnect sendImage funciona mejor con rutas de archivo
+    // Guardar temporalmente el buffer en disco
+    const fs = require('fs');
+    const path = require('path');
+    const paths = require('../config/paths');
+    
+    const tempDir = path.join(paths.DATA_BASE_DIR, 'temp');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    const tempFilePath = path.join(tempDir, `cita_${Date.now()}.png`);
+    
+    try {
+      // Guardar buffer en archivo temporal
+      fs.writeFileSync(tempFilePath, imagenBuffer);
+      
+      // Enviar imagen usando la ruta del archivo
+      await client.sendImage(numeroFormateado, tempFilePath, 'cita_confirmacion.png', caption);
+      
+      // Eliminar archivo temporal después de enviar
+      setTimeout(() => {
+        try {
+          if (fs.existsSync(tempFilePath)) {
+            fs.unlinkSync(tempFilePath);
+          }
+        } catch (unlinkError) {
+          // Ignorar errores al eliminar archivo temporal
+        }
+      }, 5000); // Eliminar después de 5 segundos
+      
+    } catch (sendError) {
+      // Limpiar archivo temporal en caso de error
+      try {
+        if (fs.existsSync(tempFilePath)) {
+          fs.unlinkSync(tempFilePath);
+        }
+      } catch (unlinkError) {
+        // Ignorar
+      }
+      throw sendError;
+    }
+
+    if (process.env.LOG_LEVEL === 'verbose') {
+      logMessage("SUCCESS", `Imagen enviada correctamente`, {
+        destino: extraerNumero(numeroFormateado),
+        tamaño: imagenBuffer.length,
+      });
+    }
+
+    return true;
+  } catch (error) {
+    logMessage("ERROR", "Error al enviar imagen", {
+      userId: userId,
+      error: error.message,
+      stack: error.stack,
+    });
+    return false;
+  }
+}
+
 module.exports = {
   extraerNumero,
   extraerNumeroReal,
   extraerSessionId,
+  enviarMensajeSeguro,
+  enviarImagenSeguro,
+  normalizarTelefono,
   enviarMensajeSeguro,
   inicializarUsuario,
   extractName,

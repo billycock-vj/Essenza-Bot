@@ -2,11 +2,9 @@
 // Ejecutar con: node scripts/eliminar-citas-duplicadas.js
 
 const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-const fs = require('fs');
+const paths = require('../config/paths');
 
-const DB_DIR = path.join(__dirname, '..', 'data-storage');
-const DB_PATH = path.join(DB_DIR, 'reservas.db');
+const DB_PATH = paths.DB_PATH;
 
 function abrirDB() {
   return new Promise((resolve, reject) => {

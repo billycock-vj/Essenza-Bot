@@ -19,6 +19,7 @@
     "@wppconnect-team/wppconnect": "^1.37.8",
     "dotenv": "^16.4.7",
     "openai": "^6.9.1",
+    "sharp": "^0.34.5",
     "sqlite3": "^5.1.6"
   }
 }

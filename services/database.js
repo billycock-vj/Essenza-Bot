@@ -832,6 +832,37 @@ async function eliminarReserva(id) {
 }
 
 /**
+ * Elimina todas las reservas de la base de datos
+ * @returns {Promise<number>} - Número de reservas eliminadas
+ */
+async function limpiarTodasLasReservas() {
+  const db = await abrirDB();
+  
+  return new Promise((resolve, reject) => {
+    // Primero contar cuántas reservas hay
+    db.get('SELECT COUNT(*) as total FROM reservas', (err, row) => {
+      if (err) {
+        db.close();
+        reject(err);
+        return;
+      }
+      
+      const total = row ? row.total : 0;
+      
+      // Eliminar todas las reservas
+      db.run('DELETE FROM reservas', (err) => {
+        db.close();
+        if (err) {
+          reject(err);
+        } else {
+          resolve(total);
+        }
+      });
+    });
+  });
+}
+
+/**
  * Obtiene estadísticas de reservas
  * @param {Date} fechaDesde - Fecha desde
  * @param {Date} fechaHasta - Fecha hasta
@@ -1996,6 +2027,7 @@ module.exports = {
   consultarDisponibilidad,
   actualizarReserva,
   eliminarReserva,
+  limpiarTodasLasReservas,
   obtenerEstadisticas,
   verificarConflictoHorario,
   obtenerConfiguracion,
