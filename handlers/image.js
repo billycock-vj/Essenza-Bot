@@ -353,8 +353,56 @@ async function procesarImagenCita(client, message, userId) {
       return;
     }
     
-    // Si tenemos todos los datos, crear la cita directamente
-    await crearCitaCompleta(client, userId, datosCita);
+    // Si tenemos todos los datos, mostrar resumen y pedir confirmación
+    const storage = require('../services/storage');
+    
+    // Guardar datos temporalmente en storage para confirmación
+    storage.setUserData(userId, {
+      datosCitaPendiente: datosCita,
+      tipoConfirmacion: 'imagen_cita'
+    });
+    storage.setUserState(userId, 'confirmando_cita_imagen');
+    
+    // Formatear fecha y hora para mostrar
+    let fechaFormateada = datosCita.fecha;
+    let horaFormateada = datosCita.hora;
+    
+    // Intentar formatear la hora a formato 12h si es posible
+    try {
+      const [hora, minutos] = datosCita.hora.split(':').map(Number);
+      if (!isNaN(hora) && !isNaN(minutos)) {
+        let periodo = 'AM';
+        let hora12 = hora;
+        if (hora === 0) {
+          hora12 = 12;
+        } else if (hora === 12) {
+          periodo = 'PM';
+        } else if (hora > 12) {
+          hora12 = hora - 12;
+          periodo = 'PM';
+        }
+        horaFormateada = `${hora12}:${minutos.toString().padStart(2, '0')} ${periodo}`;
+      }
+    } catch (e) {
+      // Si falla, usar la hora original
+    }
+    
+    let mensajeConfirmacion = "✅ *Datos extraídos de la imagen:*\n\n";
+    mensajeConfirmacion += `📅 *Fecha:* ${fechaFormateada}\n`;
+    mensajeConfirmacion += `⏰ *Hora:* ${horaFormateada}\n`;
+    mensajeConfirmacion += `👤 *Cliente:* ${datosCita.nombreCliente}\n`;
+    mensajeConfirmacion += `📱 *Teléfono:* ${datosCita.telefonoCliente}\n`;
+    mensajeConfirmacion += `💆 *Servicio:* ${datosCita.servicio}\n`;
+    mensajeConfirmacion += `💰 *Precio:* S/ ${datosCita.precio || '0'}\n`;
+    if (datosCita.duracion) {
+      mensajeConfirmacion += `⏱️ *Duración:* ${datosCita.duracion} minutos\n`;
+    }
+    mensajeConfirmacion += "\n⚠️ *IMPORTANTE:*\n";
+    mensajeConfirmacion += "Revisa los datos antes de confirmar.\n\n";
+    mensajeConfirmacion += "Para crear la cita, escribe: *confirmar*\n";
+    mensajeConfirmacion += "Para cancelar, escribe: *cancelar*";
+    
+    await enviarMensajeSeguro(client, userId, mensajeConfirmacion);
     
   } catch (error) {
     logMessage("ERROR", "Error al procesar imagen de cita", {

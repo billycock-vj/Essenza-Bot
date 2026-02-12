@@ -17,11 +17,12 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const config = require("./config");
+const paths = require("./config/paths");
 const adminHandler = require("./handlers/admin");
 const db = require("./services/database");
+const { getSaludoPorHora } = require("./utils/responses");
 
 // Módulos de funcionalidades
-const db = require("./services/database");
 const leadClassification = require("./handlers/leadClassification");
 const followUp = require("./handlers/followUp");
 const storiesAutomation = require("./handlers/storiesAutomation");
@@ -103,7 +104,10 @@ INSTRUCCIONES:
 - Si pregunta por horarios, da el horario específico del día (verificar qué día es hoy/mañana)
 - Si pregunta por ubicación, proporciona la dirección y el mapa
 - Si pregunta por pagos, da la información de Yape y banco
-- Si el cliente quiere reservar, explica el proceso de depósito (S/20 para todos los servicios)
+- Si el cliente quiere reservar, explica el proceso de depósito (S/20 para todos los servicios) y di que un administrador se pondrá en contacto para confirmar
+- NUNCA confirmes ni crees reservas automáticamente
+- NUNCA digas que la cita está confirmada o reservada
+- Tu función es INFORMAR sobre el proceso, NO crear reservas
 - Si no sabes algo, di que consultarás y te pondrás en contacto
 - Mantén las respuestas concisas pero completas (máximo 300 palabras)
 
@@ -149,7 +153,225 @@ setInterval(() => {
 }, 60 * 60 * 1000); // Cada hora
 
 // ============================================
-// FUNCIÓN PARA CONSULTAR IA
+// FUNCIÓN PARA NOTIFICAR SOLICITUD DE RESERVA
+// ============================================
+/**
+ * Extrae detalles de reserva del mensaje del cliente
+ * @param {string} mensaje - Mensaje del cliente
+ * @returns {Object} - Detalles extraídos (fecha, hora, servicio, etc.)
+ */
+function extraerDetallesReserva(mensaje) {
+  const detalles = {
+    fecha: null,
+    hora: null,
+    servicio: null,
+    mensajeCompleto: mensaje
+  };
+  
+  // Buscar fecha en formato DD/MM/YYYY o DD/MM
+  const fechaMatch = mensaje.match(/(\d{1,2}\/\d{1,2}(?:\/\d{4})?)/);
+  if (fechaMatch) {
+    detalles.fecha = fechaMatch[1];
+  }
+  
+  // Buscar hora en formato HH:MM o "X pm/am"
+  const horaMatch24 = mensaje.match(/(\d{1,2}):(\d{2})/);
+  const horaMatch12 = mensaje.match(/(\d{1,2})\s*(am|pm|AM|PM)/);
+  if (horaMatch24) {
+    detalles.hora = `${horaMatch24[1]}:${horaMatch24[2]}`;
+  } else if (horaMatch12) {
+    let hora = parseInt(horaMatch12[1]);
+    const periodo = horaMatch12[2].toLowerCase();
+    if (periodo === 'pm' && hora !== 12) hora += 12;
+    if (periodo === 'am' && hora === 12) hora = 0;
+    detalles.hora = `${hora.toString().padStart(2, '0')}:00`;
+  }
+  
+  // Buscar servicios comunes
+  const servicios = [
+    'masaje relajante', 'masaje descontracturante', 'masaje terapéutico',
+    'limpieza facial básica', 'limpieza facial profunda',
+    'fisioterapia', 'electroterapia', 'esferas chinas', 'piedras calientes'
+  ];
+  
+  for (const servicio of servicios) {
+    if (mensaje.toLowerCase().includes(servicio)) {
+      detalles.servicio = servicio;
+      break;
+    }
+  }
+  
+  return detalles;
+}
+
+/**
+ * Notifica a los administradores sobre una solicitud de reserva usando imagen
+ * @param {Object} client - Cliente de wppconnect
+ * @param {string} userId - ID del cliente
+ * @param {string} userName - Nombre del cliente
+ * @param {string} phone - Teléfono del cliente
+ * @param {string} mensaje - Mensaje del cliente
+ */
+async function notificarSolicitudReserva(client, userId, userName, phone, mensaje) {
+  try {
+    const detalles = extraerDetallesReserva(mensaje);
+    const RESERVA_ADMIN_NUMBERS = config.RESERVA_ADMIN_NUMBERS || config.ADMIN_NUMBERS;
+    const { extraerNumero, enviarImagenSeguro } = messageHelpers;
+    const { generarImagenCita } = require('./handlers/imageGenerator');
+    
+    // Preparar fecha con día de la semana si tenemos fecha
+    let fechaTexto = detalles.fecha || 'Por confirmar';
+    if (detalles.fecha) {
+      try {
+        // Intentar parsear la fecha para obtener el día de la semana
+        const partesFecha = detalles.fecha.split('/');
+        if (partesFecha.length >= 2) {
+          const dia = parseInt(partesFecha[0], 10);
+          const mes = parseInt(partesFecha[1], 10) - 1;
+          const año = partesFecha[2] ? parseInt(partesFecha[2], 10) : new Date().getFullYear();
+          const fecha = new Date(año, mes, dia);
+          const diasSemana = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+          const diaSemana = diasSemana[fecha.getDay()];
+          // Asegurar que la fecha tenga año completo
+          const fechaCompleta = partesFecha[2] ? detalles.fecha : `${detalles.fecha}/${año}`;
+          fechaTexto = `${diaSemana} ${fechaCompleta}`;
+        }
+      } catch (e) {
+        // Si falla, usar la fecha original
+        console.error("Error al parsear fecha:", e.message);
+      }
+    }
+    
+    // Preparar hora en formato 24h (debe estar en formato HH:MM)
+    let horaFormato24 = detalles.hora || '00:00';
+    if (!detalles.hora) {
+      horaFormato24 = '00:00';
+    } else if (!detalles.hora.includes(':')) {
+      // Si no tiene formato, intentar parsear
+      horaFormato24 = '00:00';
+    }
+    
+    // Preparar datos para la imagen (formato idéntico al de crear reserva)
+    const datosParaImagen = {
+      fechaTexto: fechaTexto,
+      hora: horaFormato24,
+      cliente: userName || 'Cliente',
+      telefono: phone || extraerNumero(userId) || 'No disponible',
+      servicio: detalles.servicio || 'Por confirmar',
+      precio: 'A revisión',
+      deposito: 0,
+      estado: 'Pendiente'
+    };
+    
+    // Generar imagen usando la misma función que se usa para crear reservas
+    // Usar ID 0 (se mostrará como "ID Reserva: #0") ya que aún no se ha creado la reserva
+    // La imagen será idéntica a la de confirmación, solo que con estado "Pendiente"
+    let imagenBuffer;
+    try {
+      imagenBuffer = await generarImagenCita(datosParaImagen, 0);
+    } catch (error) {
+      console.error("⚠️ Error al generar imagen de notificación:", error.message);
+      // Si falla la generación de imagen, enviar mensaje de texto como fallback
+      let mensajeNotificacion = `🔔 *NUEVA SOLICITUD DE RESERVA*\n\n`;
+      mensajeNotificacion += `👤 *Cliente:* ${userName}\n`;
+      mensajeNotificacion += `📱 *Teléfono:* ${phone || extraerNumero(userId)}\n\n`;
+      if (detalles.fecha) mensajeNotificacion += `📅 *Fecha:* ${detalles.fecha}\n`;
+      if (detalles.hora) mensajeNotificacion += `⏰ *Hora:* ${detalles.hora}\n`;
+      if (detalles.servicio) mensajeNotificacion += `💆 *Servicio:* ${detalles.servicio}\n`;
+      mensajeNotificacion += `\n⚠️ *Estado:* Pendiente de confirmación`;
+      
+      for (const adminId of RESERVA_ADMIN_NUMBERS) {
+        try {
+          await client.sendText(adminId, mensajeNotificacion);
+        } catch (err) {
+          console.error(`❌ Error al enviar notificación a ${extraerNumero(adminId)}:`, err.message);
+        }
+      }
+      return;
+    }
+    
+    // Enviar imagen a todos los administradores
+    for (const adminId of RESERVA_ADMIN_NUMBERS) {
+      try {
+        await enviarImagenSeguro(client, adminId, imagenBuffer, '🔔 Nueva solicitud de reserva - Pendiente de confirmación');
+        console.log(`✅ Imagen de notificación enviada a administrador: ${extraerNumero(adminId)}`);
+      } catch (error) {
+        console.error(`❌ Error al enviar imagen a administrador ${extraerNumero(adminId)}:`, error.message);
+      }
+    }
+  } catch (error) {
+    console.error("❌ Error al notificar solicitud de reserva:", error.message);
+  }
+}
+
+// ============================================
+// RESPUESTA SIMPLE AL CLIENTE (solo 3 acciones)
+// ============================================
+const IMAGENES_PAQUETES_DIR = path.join(paths.DATA_BASE_DIR, "imagenes");
+
+/**
+ * Obtiene las rutas de imágenes del directorio de paquetes/servicios.
+ * Solo incluye archivos cuyo nombre empieza con números (ej: 01.jpg, 02.png).
+ * Excluye la plantilla base (plantilla_base.png).
+ * @returns {string[]} - Rutas completas de archivos de imagen
+ */
+function obtenerImagenesParaCliente() {
+  try {
+    if (!fs.existsSync(IMAGENES_PAQUETES_DIR)) {
+      return [];
+    }
+    const archivos = fs.readdirSync(IMAGENES_PAQUETES_DIR);
+    return archivos
+      .filter((f) => {
+        const ext = path.extname(f).toLowerCase();
+        const base = path.basename(f, ext).toLowerCase();
+        const esImagen = /\.(jpg|jpeg|png|gif|webp)$/i.test(path.extname(f));
+        const empiezaConNumero = /^\d+/.test(f);
+        const noEsPlantillaBase = !base.includes("plantilla");
+        return esImagen && empiezaConNumero && noEsPlantillaBase;
+      })
+      .map((f) => path.join(IMAGENES_PAQUETES_DIR, f))
+      .sort();
+  } catch (e) {
+    console.warn("⚠️ No se pudieron cargar imágenes para cliente:", e.message);
+    return [];
+  }
+}
+
+/**
+ * Responde al cliente solo con: saludo según hora, imágenes y pregunta de reserva
+ * @param {Object} client - Cliente wppconnect
+ * @param {string} userId - ID del usuario
+ */
+async function responderClienteSimple(client, userId) {
+  const { enviarMensajeSeguro, enviarImagenSeguro } = messageHelpers;
+
+  // 1. Saludar condicional a la hora del día
+  const saludo = getSaludoPorHora();
+  await enviarMensajeSeguro(client, userId, saludo);
+
+  // 2. Enviar imágenes (si existen)
+  const rutasImagenes = obtenerImagenesParaCliente();
+  for (const ruta of rutasImagenes) {
+    try {
+      const buffer = fs.readFileSync(ruta);
+      await enviarImagenSeguro(client, userId, buffer, "");
+      await new Promise((r) => setTimeout(r, 800)); // Pequeña pausa entre imágenes
+    } catch (err) {
+      console.warn("⚠️ Error al enviar imagen:", ruta, err.message);
+    }
+  }
+
+  // 3. Preguntar para qué día quiere la reserva
+  await enviarMensajeSeguro(
+    client,
+    userId,
+    "¿Para cuándo le gustaría la reserva?"
+  );
+}
+
+// ============================================
+// FUNCIÓN PARA CONSULTAR IA (no usada en flujo cliente simple)
 // ============================================
 async function consultarIA(mensaje, userId) {
   try {
@@ -502,48 +724,17 @@ wppconnect
           }
         }
         
-        // Si no es administrador, usar IA normalmente
-        // (La verificación de flag_bot_activo ya cubre todo, incluyendo IA)
-        
-        // Consultar IA (puede retornar null si el modo no lo permite)
-
-        // Extraer información del mensaje
-        const sessionId = messageHelpers.extraerSessionId(userId);
-        const phone = messageHelpers.extraerNumeroReal(message);
-        const userName = message.notifyName || message.pushName || 'Cliente';
-        
-        // Obtener o crear cliente en la base de datos
-        let cliente;
+        // Cliente: el bot solo hace 3 cosas — saludo, imágenes y pregunta de reserva
         try {
-          cliente = await db.obtenerOCrearCliente(sessionId, phone, phone?.startsWith('51') ? 'PE' : null, userName);
+          await responderClienteSimple(client, userId);
+          console.log(`✅ [${new Date().toLocaleTimeString()}] Respuesta simple enviada (saludo + imágenes + reserva)\n`);
         } catch (error) {
-          console.error("⚠️ Error al obtener/crear cliente:", error.message);
-        }
-        
-        // Clasificar lead y actualizar estado
-        try {
-          await leadClassification.actualizarEstadoLeadCliente(db, sessionId, mensajeTexto);
-        } catch (error) {
-          console.error("⚠️ Error al clasificar lead:", error.message);
-        }
-        
-        // Marcar que el cliente respondió (detiene seguimientos pendientes)
-        try {
-          await followUp.marcarClienteRespondio(sessionId);
-        } catch (error) {
-          console.error("⚠️ Error al marcar respuesta:", error.message);
-        }
-        
-        // Consultar IA
-        const respuesta = await consultarIA(mensajeTexto, userId);
-        
-        // Solo enviar respuesta si la IA respondió
-        if (respuesta) {
-          await client.sendText(userId, respuesta);
-          console.log(`✅ [${new Date().toLocaleTimeString()}] Respuesta enviada\n`);
-        } else {
-          // Si la IA no respondió (modo manual o solo_faq), informar al usuario
-          console.log(`ℹ️ [${new Date().toLocaleTimeString()}] IA no responde (modo actual)\n`);
+          console.error("❌ Error al responder al cliente:", error.message);
+          await messageHelpers.enviarMensajeSeguro(
+            client,
+            userId,
+            "Disculpa, no pude procesar tu mensaje. Por favor, intenta de nuevo en un momento."
+          );
         }
       } catch (error) {
         console.error("❌ Error al procesar mensaje:", error.message);

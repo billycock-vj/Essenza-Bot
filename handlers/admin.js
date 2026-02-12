@@ -4,7 +4,7 @@
 
 const { logMessage } = require('../utils/logger');
 const { enviarMensajeSeguro, enviarImagenSeguro, extraerNumero, normalizarTelefono } = require('./messageHelpers');
-const { procesarImagenCita } = require('./image');
+const { procesarImagenCita, crearCitaCompleta } = require('./image');
 const { crearReservaYGenerarImagen } = require('./reservaCompleta');
 const db = require('../services/database');
 const storage = require('../services/storage');
@@ -256,8 +256,62 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
     return true;
   }
 
-  // Flujo interactivo paso a paso para crear reserva
+  // Manejar confirmación de cita desde imagen
   const userState = storage.getUserState(userId);
+  if (userState === 'confirmando_cita_imagen') {
+    const userData = storage.getUserData(userId) || {};
+    const datosCita = userData.datosCitaPendiente;
+    
+    if (textLower === 'confirmar' || textLower === 'si' || textLower === 'sí') {
+      if (datosCita) {
+        try {
+          // Limpiar estado antes de crear la cita
+          storage.setUserState(userId, null);
+          storage.setUserData(userId, null);
+          
+          // Crear la cita
+          await crearCitaCompleta(client, userId, datosCita);
+          return true;
+        } catch (error) {
+          await enviarMensajeSeguro(
+            client,
+            userId,
+            `❌ Error al crear la cita: ${error.message}\n\n` +
+            `Intenta enviar la imagen nuevamente.`
+          );
+          return true;
+        }
+      } else {
+        await enviarMensajeSeguro(
+          client,
+          userId,
+          "❌ No se encontraron datos de la cita. Por favor, envía la imagen nuevamente."
+        );
+        storage.setUserState(userId, null);
+        storage.setUserData(userId, null);
+        return true;
+      }
+    } else if (textLower === 'cancelar' || textLower === 'no') {
+      storage.setUserState(userId, null);
+      storage.setUserData(userId, null);
+      await enviarMensajeSeguro(
+        client,
+        userId,
+        "❌ Creación de cita cancelada."
+      );
+      return true;
+    } else {
+      // Si no es confirmar ni cancelar, recordar las opciones
+      await enviarMensajeSeguro(
+        client,
+        userId,
+        "⚠️ Por favor, escribe *confirmar* para crear la cita o *cancelar* para cancelar."
+      );
+      return true;
+    }
+  }
+
+  // Flujo interactivo paso a paso para crear reserva
   console.log(`🔍 [ADMIN] Estado del usuario: ${userState || 'sin estado'}`);
   
   if (userState && userState.startsWith('creando_reserva_')) {
