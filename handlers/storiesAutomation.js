@@ -73,36 +73,62 @@ async function obtenerImagenesDelDia(diaDir) {
 }
 
 /**
- * Publica una historia en WhatsApp
+ * Obtiene el MIME type según la extensión del archivo
+ */
+function getMimeFromPath(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeMap = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp' };
+  return mimeMap[ext] || 'image/jpeg';
+}
+
+/**
+ * Publica una historia en WhatsApp usando la API de Estado (Stories).
+ * El cliente wppconnect tiene sendImageStatus(pathOrBase64) que usa WPP.status.sendImageStatus.
  * @param {Object} client - Cliente de wppconnect
  * @param {string} rutaImagen - Ruta completa de la imagen
- * @returns {Promise<void>}
+ * @returns {Promise<{ ok: boolean, skip?: boolean, error?: string }>}
  */
 async function publicarHistoria(client, rutaImagen) {
+  const nombreArchivo = path.basename(rutaImagen);
   try {
-    const nombreArchivo = path.basename(rutaImagen);
-    
     // Verificar si ya fue publicada
     const yaPublicada = await db.historiaYaPublicada(nombreArchivo);
     if (yaPublicada) {
       console.log(`⏭️  Historia ya publicada: ${nombreArchivo}`);
-      return;
+      return { ok: true, skip: true };
     }
-    
-    // Leer imagen
+
+    // 1) Preferir client.sendImageStatus (API oficial de wppconnect) con data URL base64
     const imagenBuffer = fs.readFileSync(rutaImagen);
-    
-    // Publicar en WhatsApp (usando status@broadcast)
-    await client.sendImage('status@broadcast', imagenBuffer, nombreArchivo, '');
-    
-    // Registrar en base de datos
+    const base64 = imagenBuffer.toString('base64');
+    const mime = getMimeFromPath(rutaImagen);
+    const dataUrl = `data:${mime};base64,${base64}`;
+
+    if (typeof client.sendImageStatus === 'function') {
+      await client.sendImageStatus(dataUrl);
+    } else {
+      // 2) Fallback: ejecutar en la página si el cliente no expone sendImageStatus
+      const page = client.page || (client.getPage && await client.getPage());
+      if (page && typeof page.evaluate === 'function') {
+        await page.evaluate(async (dataUrlImage) => {
+          if (typeof WPP !== 'undefined' && WPP.status && typeof WPP.status.sendImageStatus === 'function') {
+            return await WPP.status.sendImageStatus(dataUrlImage);
+          }
+          throw new Error('WPP.status.sendImageStatus no disponible');
+        }, dataUrl);
+      } else {
+        await client.sendImage('status@broadcast', imagenBuffer, nombreArchivo, '');
+      }
+    }
+
     const diaSemana = obtenerDiaSemana();
     const horaPublicacion = new Date().toLocaleTimeString('es-PE');
     await db.registrarHistoriaPublicada(nombreArchivo, rutaImagen, diaSemana, horaPublicacion);
-    
     console.log(`✅ Historia publicada: ${nombreArchivo}`);
+    return { ok: true };
   } catch (error) {
     console.error(`❌ Error al publicar historia ${rutaImagen}:`, error.message);
+    return { ok: false, error: error.message };
   }
 }
 
@@ -110,35 +136,40 @@ async function publicarHistoria(client, rutaImagen) {
  * Publica todas las historias de un día con delays
  * @param {Object} client - Cliente de wppconnect
  * @param {string} dia - Día de la semana (ej: 'lunes')
- * @returns {Promise<void>}
+ * @returns {Promise<{ total: number, publicadas: number, omitidas: number, errores: string[] }>}
  */
 async function publicarHistoriasDelDia(client, dia) {
+  const resultado = { total: 0, publicadas: 0, omitidas: 0, errores: [] };
   try {
     const imagenes = await obtenerImagenesDelDia(dia);
-    
+    resultado.total = imagenes.length;
+
     if (imagenes.length === 0) {
       console.log(`ℹ️  No hay imágenes para publicar el ${dia}`);
-      return;
+      return resultado;
     }
-    
+
     console.log(`📸 Publicando ${imagenes.length} historias para ${dia}...`);
-    
-    // Publicar cada imagen con delay
+
     for (let i = 0; i < imagenes.length; i++) {
-      await publicarHistoria(client, imagenes[i]);
-      
-      // Delay entre historias (excepto la última)
+      const res = await publicarHistoria(client, imagenes[i]);
+      if (res.ok && res.skip) resultado.omitidas += 1;
+      else if (res.ok) resultado.publicadas += 1;
+      else resultado.errores.push(`${path.basename(imagenes[i])}: ${res.error}`);
+
       if (i < imagenes.length - 1) {
         const delay = obtenerDelay();
         console.log(`⏳ Esperando ${delay / 1000} segundos antes de la siguiente historia...`);
         await new Promise(resolve => setTimeout(resolve, delay));
       }
     }
-    
-    console.log(`✅ Todas las historias de ${dia} publicadas`);
+
+    console.log(`✅ Historias de ${dia}: ${resultado.publicadas} publicadas, ${resultado.omitidas} omitidas, ${resultado.errores.length} errores`);
   } catch (error) {
     console.error(`❌ Error al publicar historias de ${dia}:`, error);
+    resultado.errores.push(error.message);
   }
+  return resultado;
 }
 
 /**
@@ -147,6 +178,20 @@ async function publicarHistoriasDelDia(client, dia) {
  */
 function inicializarAutomatizacionHistorias(client) {
   console.log('📅 Inicializando automatización de historias...');
+  
+  // Asegurar que existan los directorios por día (lunes, miercoles, viernes)
+  ['lunes', 'miercoles', 'viernes'].forEach((dia) => {
+    const dir = path.join(HISTORIAS_BASE_DIR, dia);
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true });
+        console.log(`📁 Creado directorio: ${dir}`);
+      } catch (e) {
+        console.warn(`⚠️ No se pudo crear ${dir}:`, e.message);
+      }
+    }
+  });
+  console.log(`📂 Coloca imágenes en: ${HISTORIAS_BASE_DIR}/lunes, .../miercoles, .../viernes`);
   
   // Programar publicación para cada día
   Object.entries(HORARIOS_PUBLICACION).forEach(([dia, cronExpression]) => {

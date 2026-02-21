@@ -6,6 +6,7 @@ const { logMessage } = require('../utils/logger');
 const { enviarMensajeSeguro, enviarImagenSeguro, extraerNumero, normalizarTelefono } = require('./messageHelpers');
 const { procesarImagenCita } = require('./image');
 const { crearReservaYGenerarImagen } = require('./reservaCompleta');
+const storiesAutomation = require('./storiesAutomation');
 const db = require('../services/database');
 const storage = require('../services/storage');
 const config = require('../config');
@@ -234,6 +235,49 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
     console.log(`\n📷 IMAGEN RECIBIDA DE ADMINISTRADOR - PROCESANDO...\n`);
     await procesarImagenCita(client, message, userId);
     return true;
+  }
+
+  // Comando: Subir estados/historias (prueba manual, mismo flujo que el cron)
+  // Acepta: "sube estados de lunes", "sube estados lunes", "sube estados del lunes", "sube estados de miércoles", etc.
+  const textoTrimmed = (textLower || '').trim().replace(/\s+/g, ' ');
+  if (textoTrimmed.startsWith('sube estados')) {
+    const matchSubeEstados = textoTrimmed.match(/^sube estados (?:de\s+|del\s+)?(lunes|miercoles|miércoles|viernes)\s*$/i);
+    if (matchSubeEstados) {
+      const diaRaw = matchSubeEstados[1].toLowerCase();
+      const dia = diaRaw === 'miércoles' ? 'miercoles' : diaRaw; // carpeta sin tilde
+      try {
+        await enviarMensajeSeguro(client, userId, `📸 Publicando historias de *${dia}* (prueba manual)...`);
+        const res = await storiesAutomation.publicarHistoriasDelDia(client, dia);
+        let msg = `📸 *Resultado (${dia})*\n`;
+        msg += `• Imágenes en carpeta: ${res.total}\n`;
+        msg += `• Publicadas: ${res.publicadas}\n`;
+        if (res.omitidas > 0) msg += `• Omitidas (ya publicadas antes): ${res.omitidas}\n`;
+        if (res.errores.length > 0) {
+          msg += `• Errores: ${res.errores.length}\n`;
+          msg += res.errores.slice(0, 3).map(e => `  - ${e}`).join('\n');
+          if (res.errores.length > 3) msg += `\n  ... y ${res.errores.length - 3} más`;
+        }
+        if (res.total === 0) {
+          msg += `\n💡 Coloca imágenes (jpg, png, webp) en la carpeta *historias/${dia}/* del proyecto y vuelve a intentar.`;
+        } else if (res.publicadas === 0 && res.errores.length > 0) {
+          msg += `\n💡 Revisa que el bot tenga permiso para publicar estado y que wppconnect esté actualizado.`;
+        }
+        await enviarMensajeSeguro(client, userId, msg);
+      } catch (error) {
+        logMessage("ERROR", "Error al subir estados (prueba)", { dia, error: error.message });
+        await enviarMensajeSeguro(client, userId, `❌ Error al publicar historias de ${dia}: ${error.message}`);
+      }
+      return true;
+    }
+    // Escribió "sube estados" sin día → indicar uso
+    if (/^sube estados\s*$/i.test(textoTrimmed)) {
+      await enviarMensajeSeguro(
+        client,
+        userId,
+        `📸 *Subir estados (prueba)*\n\nIndica el día:\n• sube estados de lunes\n• sube estados de miercoles\n• sube estados de viernes`
+      );
+      return true;
+    }
   }
 
   // Comando: Crear reserva (flujo interactivo paso a paso)
@@ -1394,6 +1438,10 @@ async function mostrarListaComandos(client, userId) {
   const parte2 = `🤖 *CONTROL DEL BOT*\n` +
     `• activar bot / bot on - Activar bot completamente (bot + IA)\n` +
     `• desactivar bot / bot off - Desactivar bot completamente (bot + IA)\n\n` +
+    `📸 *ESTADOS / HISTORIAS (prueba)*\n` +
+    `• sube estados de lunes - Publicar ahora las historias de lunes\n` +
+    `• sube estados de miercoles - Publicar ahora las historias de miércoles\n` +
+    `• sube estados de viernes - Publicar ahora las historias de viernes\n\n` +
     `🤖 *CONFIGURACIÓN DE IA*\n` +
     `• ia modo [auto|manual|solo_faq] - Cambiar modo de IA\n` +
     `• ia limite [n] - Establecer límite diario de IA (1-100)\n\n` +

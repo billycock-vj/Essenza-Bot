@@ -160,7 +160,7 @@ async function inicializarDB() {
                       return;
                     }
                     
-                    // Tabla de clientes (actualizada con session_id y phone)
+                    // Tabla de clientes (actualizada con session_id, phone, estado_lead y ultimo_mensaje)
                     db.run(`
                       CREATE TABLE IF NOT EXISTS clientes (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -172,7 +172,9 @@ async function inicializarDB() {
                         notas TEXT,
                         total_reservas INTEGER DEFAULT 0,
                         reservas_canceladas INTEGER DEFAULT 0,
-                        ultima_reserva TEXT
+                        ultima_reserva TEXT,
+                        estado_lead TEXT DEFAULT 'info' CHECK(estado_lead IN ('info', 'lead_tibio', 'lead_caliente', 'reservado')),
+                        ultimo_mensaje TEXT
                       )
                     `, (err) => {
                       if (err) {

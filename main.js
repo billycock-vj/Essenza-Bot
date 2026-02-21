@@ -17,6 +17,7 @@ const fs = require("fs");
 const path = require("path");
 const http = require("http");
 const config = require("./config");
+const paths = require("./config/paths");
 const adminHandler = require("./handlers/admin");
 const db = require("./services/database");
 
@@ -47,13 +48,9 @@ const AIService = require("./services/aiService");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PORT = process.env.PORT || 3000;
 
-// Detectar si estamos en Fly.io
-const IS_FLY_IO = process.env.FLY_APP_NAME !== undefined || fs.existsSync('/data');
-
-// Configurar paths dinámicos
-const TOKENS_PATH = IS_FLY_IO 
-  ? '/data/tokens' 
-  : 'C:\\apps\\essenza-bot\\tokens';
+// Detectar si estamos en Fly.io (paths ya definidos en config/paths.js)
+const IS_FLY_IO = paths.IS_FLY_IO;
+const TOKENS_PATH = paths.TOKENS_PATH;
 
 // Asegurar que el directorio de tokens existe
 try {

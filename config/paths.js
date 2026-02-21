@@ -8,14 +8,18 @@ const fs = require('fs');
 // Detectar si estamos en Fly.io
 const IS_FLY_IO = process.env.FLY_APP_NAME !== undefined || fs.existsSync('/data');
 
+// En desarrollo local: usar carpetas dentro del proyecto (data, tokens, logs)
+// En Fly.io: usar /data (volumen montado)
+const PROJECT_ROOT = path.join(__dirname, '..');
+
 // Directorio base para datos persistentes
-const DATA_BASE_DIR = IS_FLY_IO ? '/data' : 'C:\\apps\\essenza-bot\\data';
+const DATA_BASE_DIR = IS_FLY_IO ? '/data' : path.join(PROJECT_ROOT, 'data');
 
 // Directorio base para tokens de WhatsApp
-const TOKENS_BASE_DIR = IS_FLY_IO ? '/data/tokens' : 'C:\\apps\\essenza-bot\\tokens';
+const TOKENS_BASE_DIR = IS_FLY_IO ? '/data/tokens' : path.join(PROJECT_ROOT, 'tokens');
 
 // Directorio base para logs
-const LOGS_BASE_DIR = IS_FLY_IO ? '/data/logs' : path.join(__dirname, '..', 'logs');
+const LOGS_BASE_DIR = IS_FLY_IO ? '/data/logs' : path.join(PROJECT_ROOT, 'logs');
 
 // Asegurar que los directorios existen
 function asegurarDirectorios() {
@@ -53,7 +57,7 @@ module.exports = {
   TOKENS_BASE_DIR,
   LOGS_BASE_DIR,
   // Rutas específicas
-  DB_PATH: IS_FLY_IO ? path.join(DATA_BASE_DIR, 'reservas.db') : 'C:\\apps\\essenza-bot\\data\\reservas.db',
+  DB_PATH: path.join(DATA_BASE_DIR, 'reservas.db'),
   RESERVAS_FILE: path.join(DATA_BASE_DIR, 'reservas.json'),
   USER_DATA_FILE: path.join(DATA_BASE_DIR, 'user-data.json'),
   ESTADISTICAS_FILE: path.join(DATA_BASE_DIR, 'estadisticas.json'),
