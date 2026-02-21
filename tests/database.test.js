@@ -28,6 +28,9 @@ jest.mock('sqlite3', () => {
         } else {
           callback(null, { lastID: 1, changes: 1 });
         }
+      } else if (typeof params === 'function') {
+        // Caso: (query, callback) - 2 parámetros
+        params(null, { lastID: 1, changes: 1 });
       }
       return mockDb;
     }),
@@ -76,7 +79,10 @@ jest.mock('sqlite3', () => {
 });
 
 jest.mock('fs');
+// Mock de validators - asegurar que obtenerHorarioDelDia esté disponible
+const validatorsReal = jest.requireActual('../utils/validators');
 jest.mock('../utils/validators', () => ({
+  ...jest.requireActual('../utils/validators'), // Incluir todas las funciones reales
   validarFecha: jest.fn((fecha, duracion) => ({
     valida: true,
     fecha: fecha instanceof Date ? fecha : new Date(fecha),
@@ -105,8 +111,15 @@ describe('services/database.js', () => {
   describe('inicializarDB', () => {
     describe('Casos normales', () => {
       test('Debe crear tablas si no existen', async () => {
-        mockDbInstance.run.mockImplementation((query, callback) => {
-          if (callback) callback(null);
+        mockDbInstance.run.mockImplementation((query, params, callback) => {
+          // Manejar ambos casos: (query, callback) y (query, params, callback)
+          if (typeof params === 'function') {
+            // Caso de 2 parámetros: (query, callback)
+            params(null, { lastID: 1, changes: 1 });
+          } else if (typeof callback === 'function') {
+            // Caso de 3 parámetros: (query, params, callback)
+            callback(null, { lastID: 1, changes: 1 });
+          }
           return mockDbInstance;
         });
 
@@ -119,13 +132,12 @@ describe('services/database.js', () => {
 
       test('Debe crear índices para búsquedas rápidas', async () => {
         let callCount = 0;
-        mockDbInstance.run.mockImplementation((query, callback) => {
+        mockDbInstance.run.mockImplementation((query, params, callback) => {
           callCount++;
-          if (callCount === 4 && callback) {
-            // Última llamada (cierre)
-            callback(null);
-          } else if (callback) {
-            callback(null);
+          // Manejar ambos casos: (query, callback) y (query, params, callback)
+          const actualCallback = typeof params === 'function' ? params : callback;
+          if (actualCallback) {
+            actualCallback(null);
           }
           return mockDbInstance;
         });

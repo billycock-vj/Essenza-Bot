@@ -21,6 +21,7 @@ Thumbs.db
 *.swp
 *.swo
 
-# Data
+# Data (local DB, reservas, etc.)
+data/
 data-storage/
 *.db

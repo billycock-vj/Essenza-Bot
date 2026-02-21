@@ -4,10 +4,11 @@ require("dotenv").config();
 // Lista de números de administradores (formato: número sin @c.us)
 // Acepta números con o sin código de país
 // También acepta números completos con @lid o @c.us
-const ADMIN_NUMBERS_RAW = process.env.ADMIN_NUMBERS || "986613254";
+const ADMIN_NUMBERS_RAW = process.env.ADMIN_NUMBERS || "986613254,983104105";
 // Números completos con sufijo (para casos especiales como dispositivos vinculados)
 const ADMIN_NUMBERS_COMPLETOS = [
-  "260602106781739@lid"
+  "260602106781739@lid",
+  "96439782895654@lid"
 ];
 
 // Números únicos de prueba (para desarrollo/testing)

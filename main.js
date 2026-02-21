@@ -18,6 +18,7 @@ const path = require("path");
 const http = require("http");
 const config = require("./config");
 const paths = require("./config/paths");
+const paths = require("./config/paths");
 const adminHandler = require("./handlers/admin");
 const db = require("./services/database");
 const { getSaludoPorHora } = require("./utils/responses");
@@ -28,19 +29,30 @@ const followUp = require("./handlers/followUp");
 const storiesAutomation = require("./handlers/storiesAutomation");
 const messageHelpers = require("./handlers/messageHelpers");
 
+// Nuevos módulos de mejoras críticas
+const { logMessage, logError } = require("./utils/logger");
+const { 
+  ExternalServiceError, 
+  RateLimitError, 
+  normalizeError 
+} = require("./utils/errors");
+const { openAIRateLimiter, withRateLimit } = require("./utils/rateLimiter");
+const { iniciarBackupsAutomaticos } = require("./services/backup");
+
+// Servicios refactorizados
+const MessageService = require("./services/messageService");
+const ConversationService = require("./services/conversationService");
+const AIService = require("./services/aiService");
+
 // ============================================
 // CONFIGURACIÓN
 // ============================================
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const PORT = process.env.PORT || 3000;
 
-// Detectar si estamos en Fly.io
-const IS_FLY_IO = process.env.FLY_APP_NAME !== undefined || fs.existsSync('/data');
-
-// Configurar paths dinámicos
-const TOKENS_PATH = IS_FLY_IO 
-  ? '/data/tokens' 
-  : 'C:\\apps\\essenza-bot\\tokens';
+// Detectar si estamos en Fly.io (paths ya definidos en config/paths.js)
+const IS_FLY_IO = paths.IS_FLY_IO;
+const TOKENS_PATH = paths.TOKENS_PATH;
 
 // Asegurar que el directorio de tokens existe
 try {
@@ -52,7 +64,10 @@ try {
 }
 
 if (!OPENAI_API_KEY) {
-  console.error("❌ ERROR: OPENAI_API_KEY no configurada en .env");
+  logError(new Error("OPENAI_API_KEY no configurada en .env"), { 
+    tipo: 'configuracion',
+    critico: true 
+  });
   process.exit(1);
 }
 
@@ -68,8 +83,12 @@ try {
     path.join(__dirname, "ESSENZA_KNOWLEDGE_BASE.md"),
     "utf-8"
   );
+  logMessage('SUCCESS', 'Base de conocimiento de Essenza cargada correctamente');
 } catch (error) {
-  console.warn("⚠️ No se pudo cargar ESSENZA_KNOWLEDGE_BASE.md, usando información por defecto");
+  logError(error, { 
+    contexto: 'Carga de ESSENZA_KNOWLEDGE_BASE.md',
+    usandoDefault: true 
+  });
   ESSENZA_KNOWLEDGE = `
 # Essenza Spa
 
@@ -114,43 +133,47 @@ INSTRUCCIONES:
 IMPORTANTE: El depósito se descuenta del total del servicio.`;
 
 // ============================================
-// SERVIDOR HTTP PARA HEALTH CHECKS
+// SERVIDOR HTTP PARA HEALTH CHECKS Y MONITOREO
 // ============================================
-const server = http.createServer((req, res) => {
-  if (req.url === '/health' || req.url === '/') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok', service: 'essenza-bot' }));
-  } else {
-    res.writeHead(404);
-    res.end('Not found');
+const monitoringService = require('./services/monitoring');
+
+const server = http.createServer(async (req, res) => {
+  try {
+    if (req.url === '/health' || req.url === '/') {
+      const health = await monitoringService.healthCheck();
+      const statusCode = health.status === 'healthy' ? 200 : 
+                        health.status === 'degraded' ? 200 : 503;
+      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(health, null, 2));
+    } else if (req.url === '/metrics') {
+      const metrics = monitoringService.getMetrics();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(metrics, null, 2));
+    } else {
+      res.writeHead(404);
+      res.end('Not found');
+    }
+  } catch (error) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ 
+      status: 'error', 
+      message: error.message 
+    }));
   }
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Servidor HTTP iniciado en puerto ${PORT}`);
+  logMessage('SUCCESS', `Servidor HTTP iniciado en puerto ${PORT}`);
   if (IS_FLY_IO) {
-    console.log(`🌐 Fly.io: Health check disponible en https://${process.env.FLY_APP_NAME}.fly.dev/health`);
+    logMessage('INFO', `Fly.io: Health check disponible en https://${process.env.FLY_APP_NAME}.fly.dev/health`);
   }
 });
 
 // ============================================
 // GESTIÓN DE CONVERSACIONES
 // ============================================
-// Historial de conversación por usuario (simple, en memoria)
-const conversaciones = new Map();
-
-// Limpiar conversaciones antiguas cada hora (evitar memory leak)
-setInterval(() => {
-  if (conversaciones.size > 1000) {
-    // Mantener solo las 500 conversaciones más recientes
-    const entries = Array.from(conversaciones.entries());
-    conversaciones.clear();
-    entries.slice(-500).forEach(([key, value]) => {
-      conversaciones.set(key, value);
-    });
-    console.log("🧹 Limpieza de conversaciones antiguas");
-  }
-}, 60 * 60 * 1000); // Cada hora
+// Servicio de conversaciones (reemplaza Map directo)
+let conversationService = null;
 
 // ============================================
 // FUNCIÓN PARA NOTIFICAR SOLICITUD DE RESERVA
@@ -373,113 +396,46 @@ async function responderClienteSimple(client, userId) {
 // ============================================
 // FUNCIÓN PARA CONSULTAR IA (no usada en flujo cliente simple)
 // ============================================
-async function consultarIA(mensaje, userId) {
-  try {
-    // Obtener modo de IA desde la base de datos
-    const modoIA = await db.obtenerConfiguracion('modo_ia') || 'auto';
-    
-    // Si el modo es 'manual', no responder automáticamente
-    if (modoIA === 'manual') {
-      return null;
-    }
-    
-    // Si el modo es 'solo_faq', solo responder preguntas frecuentes
-    if (modoIA === 'solo_faq') {
-      const esFAQ = detectarPreguntaFrecuente(mensaje);
-      if (!esFAQ) {
-        return null;
-      }
-    }
-    
-    // Obtener historial de conversación del usuario
-    let historial = conversaciones.get(userId) || [];
-    
-    // Agregar mensaje del usuario al historial
-    historial.push({ role: "user", content: mensaje });
-    
-    // Limitar historial a últimos 18 mensajes (para no exceder tokens)
-    // Mantener contexto pero no demasiado
-    if (historial.length > 18) {
-      historial = historial.slice(-18);
-    }
-    
-    // Construir mensajes para OpenAI (system prompt + historial)
-    const messages = [
-      { role: "system", content: SYSTEM_PROMPT },
-      ...historial
-    ];
-    
-    // Consultar OpenAI
-    const respuesta = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: messages,
-      temperature: 0.7,
-      max_tokens: 500,
-    });
-    
-    const respuestaTexto = respuesta.choices[0].message.content.trim();
-    
-    // Reemplazar doble negrita (**texto**) por negrita simple (*texto*) para WhatsApp
-    const respuestaFormateada = respuestaTexto.replace(/\*\*([^*]+)\*\*/g, '*$1*');
-    
-    // Agregar respuesta al historial
-    historial.push({ role: "assistant", content: respuestaFormateada });
-    conversaciones.set(userId, historial);
-    
-    return respuestaFormateada;
-  } catch (error) {
-    console.error("❌ Error al consultar IA:", error.message);
-    return "Disculpa, no pude procesar tu mensaje en este momento. Por favor, intenta de nuevo en un momento.";
-  }
-}
-
-// Función simple para detectar preguntas frecuentes
-function detectarPreguntaFrecuente(mensaje) {
-  const mensajeLower = mensaje.toLowerCase();
-  const palabrasFAQ = [
-    'horario', 'hora', 'abierto', 'cerrado', 'atencion', 'atención',
-    'precio', 'costo', 'cuanto', 'cuánto', 'precios',
-    'servicio', 'servicios', 'masaje', 'masajes',
-    'reserva', 'reservar', 'cita', 'agendar',
-    'ubicacion', 'ubicación', 'direccion', 'dirección', 'donde', 'dónde',
-    'telefono', 'teléfono', 'contacto', 'whatsapp',
-    'yape', 'pago', 'deposito', 'depósito'
-  ];
-  
-  return palabrasFAQ.some(palabra => mensajeLower.includes(palabra));
-}
+let messageService = null;
+let aiService = null;
 
 // ============================================
 // INICIALIZACIÓN DEL BOT
 // ============================================
-console.log("🚀 Iniciando Essenza Bot...");
-console.log("📚 Cargando información de Essenza...");
+logMessage('INFO', '🚀 Iniciando Essenza Bot...');
+logMessage('INFO', '📚 Cargando información de Essenza...');
 
 // Inicializar base de datos
 (async () => {
   try {
     await db.inicializarDB();
     await db.migrarBaseDatos();
-    console.log("✅ Base de datos inicializada");
+    logMessage('SUCCESS', 'Base de datos inicializada correctamente');
+    
+    // Iniciar sistema de backups automáticos
+    iniciarBackupsAutomaticos({
+      cronSchedule: '0 2 * * *', // 2 AM diario
+      diasRetencion: 30
+    });
   } catch (error) {
-    console.error("❌ Error al inicializar base de datos:", error);
+    logError(error, { contexto: 'inicializacionDB' });
   }
 })();
 
-console.log("✅ Bot listo. Esperando mensajes...\n");
+logMessage('SUCCESS', 'Bot listo. Esperando mensajes...');
 
 // Inicializar base de datos (crear tablas si no existen)
 async function iniciarBot() {
   try {
-    console.log("🗄️ Inicializando base de datos...");
+    logMessage('INFO', 'Inicializando base de datos...');
     await db.inicializarDB();
-    console.log("✅ Base de datos inicializada correctamente\n");
+    logMessage('SUCCESS', 'Base de datos inicializada correctamente');
   } catch (error) {
-    console.error("❌ Error al inicializar base de datos:", error.message);
-    console.warn("⚠️ Continuando sin base de datos (algunos comandos pueden no funcionar)\n");
+    logError(error, { contexto: 'inicializacionDB' });
+    logMessage('WARNING', 'Continuando sin base de datos (algunos comandos pueden no funcionar)');
   }
 
-  console.log("✅ Bot listo. Esperando mensajes...\n");
+  logMessage('SUCCESS', 'Bot listo. Esperando mensajes...');
   
   // Continuar con la inicialización de wppconnect
   iniciarWppConnect();
@@ -514,18 +470,25 @@ wppconnect
       console.log("\n" + "=".repeat(70));
       console.log(`Intento: ${attempts || 1}`);
       console.log("=".repeat(70) + "\n");
+      
+      logMessage('INFO', 'QR generado para escaneo', { intento: attempts || 1 });
     },
     statusFind: (statusSession) => {
       if (statusSession === "qrReadSuccess") {
         console.log("\n✅ QR escaneado exitosamente - Bot conectado\n");
+        logMessage('SUCCESS', 'QR escaneado exitosamente - Bot conectado');
       } else if (statusSession === "notLogged") {
         console.log("📱 Esperando escaneo de QR...");
+        logMessage('INFO', 'Esperando escaneo de QR');
       } else if (statusSession === "isLogged") {
         console.log("\n✅ Sesión guardada encontrada - Bot conectado automáticamente\n");
+        logMessage('SUCCESS', 'Sesión guardada encontrada - Bot conectado automáticamente');
       } else if (statusSession === "autocloseCalled") {
         console.log("⚠️ Sesión cerrada automáticamente");
+        logMessage('WARNING', 'Sesión cerrada automáticamente');
       } else if (statusSession === "desconnectedMobile") {
         console.log("⚠️ Sesión desconectada desde móvil");
+        logMessage('WARNING', 'Sesión desconectada desde móvil');
       }
     },
     browserArgs: [
@@ -538,16 +501,33 @@ wppconnect
   })
   .then(async (client) => {
     console.log("✅ Bot conectado y listo\n");
+    logMessage('SUCCESS', 'Bot conectado y listo');
+    
+    // Inicializar servicios
+    conversationService = new ConversationService(db);
+    messageService = new MessageService(client, db);
+    aiService = new AIService(openai, db, conversationService);
+    
+    logMessage('SUCCESS', 'Servicios inicializados', {
+      messageService: true,
+      conversationService: true,
+      aiService: true
+    });
     
     // Inicializar automatización de historias
-    storiesAutomation.inicializarAutomatizacionHistorias(client);
+    try {
+      storiesAutomation.inicializarAutomatizacionHistorias(client);
+      logMessage('SUCCESS', 'Automatización de historias inicializada');
+    } catch (error) {
+      logError(error, { contexto: 'inicializacionHistorias' });
+    }
     
     // Ejecutar seguimientos automáticos cada hora
     setInterval(async () => {
       try {
         await followUp.enviarSeguimientosAutomaticos(client);
       } catch (error) {
-        console.error("❌ Error en seguimientos automáticos:", error);
+        logError(error, { contexto: 'seguimientosAutomaticos' });
       }
     }, 60 * 60 * 1000); // Cada hora
     
@@ -556,21 +536,20 @@ wppconnect
       try {
         await followUp.enviarSeguimientosAutomaticos(client);
       } catch (error) {
-        console.error("❌ Error en seguimientos iniciales:", error);
+        logError(error, { contexto: 'seguimientosIniciales' });
       }
     }, 5 * 60 * 1000); // Después de 5 minutos
     
     // Manejar mensajes
     client.onMessage(async (message) => {
       try {
-        // Ignorar mensajes de estados, grupos, etc.
-        if (
-          message.from === "status@broadcast" ||
-          message.isGroupMsg ||
-          !message.body
-        ) {
-          return;
+        // Validar mensaje usando MessageService
+        const validacion = messageService.validarMensajeEntrante(message);
+        if (!validacion.valido) {
+          return; // Mensaje no válido, ignorar
         }
+
+        const { userId, mensajeTexto } = validacion;
         
         // ============================================
         // CAPTURAR MENSAJES DEL ADMIN ENVIADOS A OTROS
@@ -616,10 +595,17 @@ wppconnect
                   `Bot desactivado para chat: ${destinatario}`
                 );
                 
-                console.log(`🔧 Bot desactivado para chat: ${destinatario} por admin ${adminUserId}`);
+                logMessage('SUCCESS', 'Bot desactivado para chat', { 
+                  destinatario, 
+                  adminUserId 
+                });
                 return;
               } catch (error) {
-                console.error(`❌ Error al desactivar bot para ${destinatario}:`, error.message);
+                logError(error, { 
+                  contexto: 'desactivarBotChat',
+                  destinatario,
+                  adminUserId 
+                });
               }
             }
             
@@ -632,10 +618,17 @@ wppconnect
                   `Bot activado para chat: ${destinatario}`
                 );
                 
-                console.log(`🔧 Bot activado para chat: ${destinatario} por admin ${adminUserId}`);
+                logMessage('SUCCESS', 'Bot activado para chat', { 
+                  destinatario, 
+                  adminUserId 
+                });
                 return;
               } catch (error) {
-                console.error(`❌ Error al activar bot para ${destinatario}:`, error.message);
+                logError(error, { 
+                  contexto: 'activarBotChat',
+                  destinatario,
+                  adminUserId 
+                });
               }
             }
           }
@@ -647,36 +640,27 @@ wppconnect
         // ============================================
         // PROCESAR MENSAJES RECIBIDOS (código normal)
         // ============================================
-        const userId = message.from;
-        const mensajeTexto = message.body.trim();
         
-        // Si el mensaje es muy corto o solo emojis, ignorar
-        if (mensajeTexto.length < 2) {
-          return;
-        }
-        
-        // Verificar si el bot está desactivado para este chat específico
-        const botDesactivadoChat = await db.obtenerConfiguracion(`bot_desactivado_${userId}`);
-        if (botDesactivadoChat === '1') {
-          console.log(`🚫 Bot desactivado para este chat: ${userId}`);
-          return; // Ignorar mensaje
-        }
-        
-        // Verificar si es administrador - Los administradores solo envían comandos, no usan IA
+        // Verificar si es administrador
         const esAdmin = adminHandler.esAdministrador(userId);
         
-        // Verificar si el bot está desactivado globalmente (solo para no-admins)
-        if (!esAdmin) {
-          const botActivo = await db.obtenerConfiguracion('flag_bot_activo');
-          if (botActivo === '0') {
-            console.log(`🚫 Bot desactivado globalmente - Mensaje ignorado de ${userId}`);
-            return; // Ignorar sin responder
-          }
+        // Verificar si el bot está activo usando MessageService
+        const botActivo = await messageService.verificarBotActivo(userId, esAdmin);
+        if (!botActivo) {
+          return; // Bot desactivado, ignorar
         }
         
-        console.log(`📥 [${new Date().toLocaleTimeString()}] Mensaje de ${userId}: ${mensajeTexto.substring(0, 50)}${mensajeTexto.length > 50 ? '...' : ''}`);
+        logMessage('INFO', 'Mensaje recibido', { 
+          userId, 
+          mensaje: mensajeTexto.substring(0, 50),
+          esAdmin 
+        });
+        
+        // Incrementar métricas
+        monitoringService.incrementMessages();
+        
         if (esAdmin) {
-          console.log(`🔑 Administrador detectado: ${userId}`);
+          logMessage('INFO', 'Administrador detectado', { userId });
           try {
             // Crear objeto de estadísticas básico para comandos de admin
             const estadisticas = {
@@ -699,18 +683,19 @@ wppconnect
             
             // Si se procesó un comando, no continuar con IA
             if (comandoProcesado) {
-              console.log(`✅ Comando de administrador procesado\n`);
+              logMessage('SUCCESS', 'Comando de administrador procesado', { userId });
               return;
             }
             
-            // Si no es un comando reconocido, informar al administrador
-            await client.sendText(
-              userId,
-              "❓ No reconocí ese comando. Envía 'comandos' para ver la lista de comandos disponibles."
-            );
+            // Si no es un comando reconocido, mostrar lista de comandos
+            await adminHandler.mostrarListaComandos(client, userId);
             return;
           } catch (error) {
-            console.error(`❌ Error al procesar comando de administrador: ${error.message}`);
+            logError(error, { 
+              contexto: 'procesarComandoAdmin',
+              userId,
+              mensaje: mensajeTexto 
+            });
             // Enviar mensaje de error al administrador
             try {
               await client.sendText(
@@ -718,7 +703,7 @@ wppconnect
                 `❌ Error al procesar comando: ${error.message}\n\nEnvía 'comandos' para ver la lista disponible.`
               );
             } catch (sendError) {
-              console.error(`❌ Error al enviar mensaje de error: ${sendError.message}`);
+              logError(sendError, { contexto: 'enviarMensajeErrorAdmin', userId });
             }
             return;
           }
@@ -737,23 +722,26 @@ wppconnect
           );
         }
       } catch (error) {
-        console.error("❌ Error al procesar mensaje:", error.message);
+        logError(error, { 
+          contexto: 'procesarMensaje',
+          userId: message?.from 
+        });
+        monitoringService.incrementErrors();
       }
     });
     
     // Manejar cambios de estado
     client.onStateChange((state) => {
-      console.log(`📊 Estado del bot: ${state}`);
+      logMessage('INFO', `Estado del bot: ${state}`);
       if (state === "CONNECTED") {
-        console.log("✅ Bot conectado y funcionando\n");
+        logMessage('SUCCESS', 'Bot conectado y funcionando');
       } else if (state === "DISCONNECTED" || state === "CLOSE") {
-        console.log("⚠️ Bot desconectado. Reinicia el servicio para reconectar.\n");
+        logMessage('WARNING', 'Bot desconectado. Reinicia el servicio para reconectar.');
       }
     });
   })
   .catch((error) => {
-    console.error("❌ Error al iniciar bot:", error.message);
-    console.error("Detalles:", error);
+    logError(error, { contexto: 'iniciarBot', critico: true });
     process.exit(1);
   });
 }
