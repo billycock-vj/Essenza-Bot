@@ -1586,6 +1586,22 @@ async function obtenerClientePorPhone(phone) {
 }
 
 /**
+ * Obtiene un cliente por session_id (sin crear). Para saber si el chat ya estaba iniciado.
+ * @param {string} sessionId - session_id (ej. userId de WhatsApp)
+ * @returns {Promise<Object|null>}
+ */
+async function obtenerClientePorSessionId(sessionId) {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.get('SELECT * FROM clientes WHERE session_id = ?', [sessionId], (err, row) => {
+      db.close();
+      if (err) reject(err);
+      else resolve(row || null);
+    });
+  });
+}
+
+/**
  * Obtiene historial completo de un cliente
  * @param {string} telefono - Número de teléfono o session_id
  * @returns {Promise<Object>}
@@ -2443,6 +2459,7 @@ module.exports = {
   estaUsuarioBloqueado,
   obtenerOCrearCliente,
   obtenerClientePorPhone,
+  obtenerClientePorSessionId,
   obtenerHistorialCliente,
   actualizarNotasCliente,
   generarReporteDiario,

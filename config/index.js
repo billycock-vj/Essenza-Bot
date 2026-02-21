@@ -4,10 +4,16 @@ require("dotenv").config();
 // Lista de números de administradores (formato: número sin @c.us)
 // Acepta números con o sin código de país
 // También acepta números completos con @lid o @c.us
+<<<<<<< Updated upstream
 const ADMIN_NUMBERS_RAW = process.env.ADMIN_NUMBERS || "986613254,983104105";
 // Números completos con sufijo (para casos especiales como dispositivos vinculados)
 const ADMIN_NUMBERS_COMPLETOS = [
   "260602106781739@lid",
+=======
+const ADMIN_NUMBERS_RAW = process.env.ADMIN_NUMBERS || "983104105";
+// Números completos con sufijo (para casos especiales como dispositivos vinculados)
+const ADMIN_NUMBERS_COMPLETOS = [
+>>>>>>> Stashed changes
   "96439782895654@lid"
 ];
 
@@ -105,7 +111,7 @@ numerosBase.forEach(num => {
 
 // Números específicos para notificaciones de reservas
 // Solo estos números recibirán notificaciones de nuevas solicitudes de reserva
-const RESERVA_ADMIN_NUMBERS_RAW = ["986613254", "260602106781739"];
+const RESERVA_ADMIN_NUMBERS_RAW = ["983104105", "96439782895654"];
 const RESERVA_ADMIN_NUMBERS = [];
 
 // Generar todas las variantes para los números de notificaciones de reserva
@@ -142,7 +148,7 @@ RESERVA_ADMIN_NUMBERS_RAW.forEach(num => {
 });
 
 module.exports = {
-  ADMIN_NUMBER: ADMIN_NUMBERS[0] || "986613254@c.us", // Mantener para compatibilidad
+  ADMIN_NUMBER: ADMIN_NUMBERS[0] || "983104105@c.us", // Mantener para compatibilidad
   ADMIN_NUMBERS: ADMIN_NUMBERS, // Array de todos los administradores (con @c.us y @lid)
   ADMIN_NUMBERS_SIN_SUFIJO: ADMIN_NUMBERS_SIN_SUFIJO, // Array de números sin sufijo para comparaciones
   RESERVA_ADMIN_NUMBERS: RESERVA_ADMIN_NUMBERS, // Array de administradores que reciben notificaciones de reservas

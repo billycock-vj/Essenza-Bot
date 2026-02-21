@@ -455,6 +455,8 @@ wppconnect
     multiDevice: false,
     folderNameToken: TOKENS_PATH,
     headless: true,
+    // Evitar versión fija 2.3000.10305x (ya no disponible); cargar WhatsApp Web actual
+    whatsappVersion: false,
     catchQR: (base64Qr, asciiQR, attempts, urlCode) => {
       console.clear();
       console.log("\n" + "=".repeat(70));
@@ -709,10 +711,25 @@ wppconnect
           }
         }
         
-        // Cliente: el bot solo hace 3 cosas — saludo, imágenes y pregunta de reserva
+        // Cliente: solo cuando el chat se inicia por primera vez (no existe en clientes)
+        const sessionId = messageHelpers.extraerSessionId(userId);
+        let clienteExistente = null;
+        try {
+          clienteExistente = await db.obtenerClientePorSessionId(sessionId);
+        } catch (e) {
+          console.warn("⚠️ Error al verificar cliente:", e.message);
+        }
+        if (clienteExistente) {
+          return; // Chat ya iniciado antes, no responder
+        }
         try {
           await responderClienteSimple(client, userId);
-          console.log(`✅ [${new Date().toLocaleTimeString()}] Respuesta simple enviada (saludo + imágenes + reserva)\n`);
+          const phone = messageHelpers.extraerNumeroReal(message);
+          const userName = message.notifyName || message.pushName || "Cliente";
+          await db.obtenerOCrearCliente(sessionId, phone, phone?.toString().startsWith("51") ? "PE" : null, userName);
+          // Necesario para que los seguimientos (12-24h, 48-72h) encuentren al cliente
+          await db.actualizarEstadoLead(sessionId, "info", new Date().toISOString());
+          console.log(`✅ [${new Date().toLocaleTimeString()}] Primera respuesta enviada (chat nuevo)\n`);
         } catch (error) {
           console.error("❌ Error al responder al cliente:", error.message);
           await messageHelpers.enviarMensajeSeguro(
@@ -741,7 +758,16 @@ wppconnect
     });
   })
   .catch((error) => {
+<<<<<<< Updated upstream
     logError(error, { contexto: 'iniciarBot', critico: true });
+=======
+    const mensaje = typeof error === 'string' ? error : (error?.message ?? String(error));
+    console.error("❌ Error al iniciar bot:", mensaje || '(sin mensaje)');
+    if (error?.stack) console.error("Stack:", error.stack);
+    if (mensaje === 'Auto Close Called' || mensaje.includes('autoclose')) {
+      console.error("💡 Sugerencia: Sesión cerrada o browser en conflicto. Ejecuta scripts/liberar-sesion-browser.ps1 y vuelve a iniciar.");
+    }
+>>>>>>> Stashed changes
     process.exit(1);
   });
 }

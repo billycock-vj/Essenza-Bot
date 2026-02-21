@@ -12,12 +12,11 @@ const paths = require('../config/paths');
 // Directorio base para historias
 const HISTORIAS_BASE_DIR = path.join(__dirname, '..', 'historias');
 
-// Configuración de horarios de publicación (formato cron)
-// Ejemplo: '0 18 * * 1' = Lunes a las 6:00 PM
+// Configuración de horarios de publicación (formato cron: minuto hora * * día_semana)
 const HORARIOS_PUBLICACION = {
-  lunes: '0 18 * * 1',      // Lunes 6:00 PM
+  lunes: '0 11 * * 1',      // Lunes 11:00 AM
   miercoles: '0 18 * * 3',  // Miércoles 6:00 PM
-  viernes: '0 18 * * 5',    // Viernes 6:00 PM
+  viernes: '0 21 * * 5',    // Viernes 9:00 PM
 };
 
 // Delay entre historias (20-40 segundos)
@@ -46,26 +45,50 @@ function obtenerDiaSemana() {
  */
 async function obtenerImagenesDelDia(diaDir) {
   return new Promise((resolve, reject) => {
-    const rutaCompleta = path.join(HISTORIAS_BASE_DIR, diaDir);
+    const rutaCompleta = path.resolve(path.join(HISTORIAS_BASE_DIR, diaDir));
     
     if (!fs.existsSync(rutaCompleta)) {
+      console.warn(`⚠️ [Historias] Carpeta no existe: ${rutaCompleta}`);
       resolve([]);
       return;
     }
     
     fs.readdir(rutaCompleta, (err, archivos) => {
       if (err) {
+        console.error(`❌ [Historias] Error al leer carpeta ${rutaCompleta}:`, err.message);
         reject(err);
         return;
       }
       
-      // Filtrar solo imágenes
+      if (archivos.length === 0) {
+        console.log(`ℹ️ [Historias] Carpeta ${diaDir} está vacía`);
+        resolve([]);
+        return;
+      }
+      
+      // Filtrar solo archivos (no subdirectorios) e imágenes
       const imagenes = archivos
         .filter(archivo => {
+          const rutaArchivo = path.join(rutaCompleta, archivo);
+          const esArchivo = fs.statSync(rutaArchivo).isFile();
+          if (!esArchivo) {
+            console.log(`⏭️ [Historias] Ignorando subdirectorio: ${archivo}`);
+            return false;
+          }
           const ext = path.extname(archivo).toLowerCase();
-          return ['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext);
+          const esImagen = ['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext);
+          if (!esImagen) {
+            console.log(`⏭️ [Historias] Ignorando archivo no imagen: ${archivo} (ext: ${ext || 'sin extensión'})`);
+          }
+          return esImagen;
         })
-        .map(archivo => path.join(rutaCompleta, archivo));
+        .map(archivo => path.resolve(path.join(rutaCompleta, archivo)));
+      
+      if (imagenes.length === 0) {
+        console.warn(`⚠️ [Historias] No se encontraron imágenes válidas en ${diaDir}. Archivos encontrados: ${archivos.join(', ')}`);
+      } else {
+        console.log(`✅ [Historias] Encontradas ${imagenes.length} imagen(es) en ${diaDir}`);
+      }
       
       resolve(imagenes);
     });
@@ -141,6 +164,7 @@ async function publicarHistoria(client, rutaImagen) {
 async function publicarHistoriasDelDia(client, dia) {
   const resultado = { total: 0, publicadas: 0, omitidas: 0, errores: [] };
   try {
+<<<<<<< Updated upstream
     const imagenes = await obtenerImagenesDelDia(dia);
     resultado.total = imagenes.length;
 
@@ -149,6 +173,17 @@ async function publicarHistoriasDelDia(client, dia) {
       return resultado;
     }
 
+=======
+    if (!client) {
+      console.warn(`⚠️ [Historias] No hay cliente conectado; no se publican historias de ${dia}.`);
+      return;
+    }
+    const imagenes = await obtenerImagenesDelDia(dia);
+    if (imagenes.length === 0) {
+      console.log(`ℹ️  No hay imágenes para publicar el ${dia}. Coloca .jpg/.png en: ${path.resolve(HISTORIAS_BASE_DIR, dia)}`);
+      return;
+    }
+>>>>>>> Stashed changes
     console.log(`📸 Publicando ${imagenes.length} historias para ${dia}...`);
 
     for (let i = 0; i < imagenes.length; i++) {
@@ -177,7 +212,9 @@ async function publicarHistoriasDelDia(client, dia) {
  * @param {Object} client - Cliente de wppconnect
  */
 function inicializarAutomatizacionHistorias(client) {
+  const rutaAbsoluta = path.resolve(HISTORIAS_BASE_DIR);
   console.log('📅 Inicializando automatización de historias...');
+<<<<<<< Updated upstream
   
   // Asegurar que existan los directorios por día (lunes, miercoles, viernes)
   ['lunes', 'miercoles', 'viernes'].forEach((dia) => {
@@ -194,15 +231,56 @@ function inicializarAutomatizacionHistorias(client) {
   console.log(`📂 Coloca imágenes en: ${HISTORIAS_BASE_DIR}/lunes, .../miercoles, .../viernes`);
   
   // Programar publicación para cada día
+=======
+  console.log(`   Carpeta de historias: ${rutaAbsoluta}`);
+
+  if (!fs.existsSync(HISTORIAS_BASE_DIR)) {
+    fs.mkdirSync(HISTORIAS_BASE_DIR, { recursive: true });
+    ['lunes', 'miercoles', 'viernes'].forEach((d) => {
+      const sub = path.join(HISTORIAS_BASE_DIR, d);
+      if (!fs.existsSync(sub)) fs.mkdirSync(sub, { recursive: true });
+    });
+    console.warn(`⚠️ Carpeta creada. Coloca imágenes en: ${rutaAbsoluta}/lunes, .../miercoles, .../viernes`);
+  }
+
+  ['lunes', 'miercoles', 'viernes'].forEach((dia) => {
+    const sub = path.resolve(path.join(HISTORIAS_BASE_DIR, dia));
+    const existe = fs.existsSync(sub);
+    if (!existe) {
+      console.warn(`   ${dia}: carpeta no existe (${sub})`);
+      return;
+    }
+    try {
+      const archivos = fs.readdirSync(sub);
+      const imagenes = archivos.filter((f) => {
+        const rutaCompleta = path.join(sub, f);
+        const esArchivo = fs.statSync(rutaCompleta).isFile();
+        if (!esArchivo) return false;
+        const ext = path.extname(f).toLowerCase();
+        return ['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext);
+      });
+      if (imagenes.length === 0) {
+        console.warn(`   ${dia}: sin imágenes (${archivos.length} archivo(s) encontrado(s): ${archivos.join(', ') || 'ninguno'})`);
+      } else {
+        console.log(`   ${dia}: ${imagenes.length} imagen(es) - ${imagenes.join(', ')}`);
+      }
+    } catch (error) {
+      console.error(`   ${dia}: Error al leer carpeta: ${error.message}`);
+    }
+  });
+
+  if (!client) {
+    console.warn('⚠️ [Historias] No hay cliente wppconnect; los cron se programarán pero fallarán hasta que el bot esté conectado.');
+  }
+
+>>>>>>> Stashed changes
   Object.entries(HORARIOS_PUBLICACION).forEach(([dia, cronExpression]) => {
     cron.schedule(cronExpression, async () => {
       console.log(`⏰ Hora de publicar historias de ${dia}`);
       await publicarHistoriasDelDia(client, dia);
     });
-    
     console.log(`✅ Programada publicación de historias para ${dia} (${cronExpression})`);
   });
-  
   console.log('✅ Automatización de historias inicializada');
 }
 
