@@ -166,6 +166,7 @@ async function publicarHistoriasDelDia(client, dia) {
   try {
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
     const imagenes = await obtenerImagenesDelDia(dia);
     resultado.total = imagenes.length;
 
@@ -174,6 +175,17 @@ async function publicarHistoriasDelDia(client, dia) {
       return resultado;
     }
 
+=======
+    if (!client) {
+      console.warn(`⚠️ [Historias] No hay cliente conectado; no se publican historias de ${dia}.`);
+      return;
+    }
+    const imagenes = await obtenerImagenesDelDia(dia);
+    if (imagenes.length === 0) {
+      console.log(`ℹ️  No hay imágenes para publicar el ${dia}. Coloca .jpg/.png en: ${path.resolve(HISTORIAS_BASE_DIR, dia)}`);
+      return;
+    }
+>>>>>>> Stashed changes
 =======
     if (!client) {
       console.warn(`⚠️ [Historias] No hay cliente conectado; no se publican historias de ${dia}.`);
@@ -228,6 +240,7 @@ function inicializarAutomatizacionHistorias(client) {
   console.log('📅 Inicializando automatización de historias...');
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
   
   // Asegurar que existan los directorios por día (lunes, miercoles, viernes)
   ['lunes', 'miercoles', 'viernes'].forEach((dia) => {
@@ -245,6 +258,8 @@ function inicializarAutomatizacionHistorias(client) {
   
   // Programar publicación para cada día
 =======
+=======
+>>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
   console.log(`   Carpeta de historias: ${rutaAbsoluta}`);
@@ -289,6 +304,9 @@ function inicializarAutomatizacionHistorias(client) {
   }
 
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes

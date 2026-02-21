@@ -760,8 +760,11 @@ wppconnect
   .catch((error) => {
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
     logError(error, { contexto: 'iniciarBot', critico: true });
 =======
+=======
+>>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes
     const mensaje = typeof error === 'string' ? error : (error?.message ?? String(error));
@@ -771,6 +774,9 @@ wppconnect
       console.error("💡 Sugerencia: Sesión cerrada o browser en conflicto. Ejecuta scripts/liberar-sesion-browser.ps1 y vuelve a iniciar.");
     }
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 =======
 >>>>>>> Stashed changes

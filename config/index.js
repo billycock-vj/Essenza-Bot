@@ -6,10 +6,16 @@ require("dotenv").config();
 // También acepta números completos con @lid o @c.us
 <<<<<<< Updated upstream
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 const ADMIN_NUMBERS_RAW = process.env.ADMIN_NUMBERS || "986613254,983104105";
 // Números completos con sufijo (para casos especiales como dispositivos vinculados)
 const ADMIN_NUMBERS_COMPLETOS = [
   "260602106781739@lid",
+=======
+const ADMIN_NUMBERS_RAW = process.env.ADMIN_NUMBERS || "983104105";
+// Números completos con sufijo (para casos especiales como dispositivos vinculados)
+const ADMIN_NUMBERS_COMPLETOS = [
+>>>>>>> Stashed changes
 =======
 const ADMIN_NUMBERS_RAW = process.env.ADMIN_NUMBERS || "983104105";
 // Números completos con sufijo (para casos especiales como dispositivos vinculados)
