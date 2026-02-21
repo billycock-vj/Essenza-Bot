@@ -165,6 +165,7 @@ async function publicarHistoriasDelDia(client, dia) {
   const resultado = { total: 0, publicadas: 0, omitidas: 0, errores: [] };
   try {
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
     const imagenes = await obtenerImagenesDelDia(dia);
     resultado.total = imagenes.length;
 
@@ -173,6 +174,17 @@ async function publicarHistoriasDelDia(client, dia) {
       return resultado;
     }
 
+=======
+    if (!client) {
+      console.warn(`⚠️ [Historias] No hay cliente conectado; no se publican historias de ${dia}.`);
+      return;
+    }
+    const imagenes = await obtenerImagenesDelDia(dia);
+    if (imagenes.length === 0) {
+      console.log(`ℹ️  No hay imágenes para publicar el ${dia}. Coloca .jpg/.png en: ${path.resolve(HISTORIAS_BASE_DIR, dia)}`);
+      return;
+    }
+>>>>>>> Stashed changes
 =======
     if (!client) {
       console.warn(`⚠️ [Historias] No hay cliente conectado; no se publican historias de ${dia}.`);
@@ -215,6 +227,7 @@ function inicializarAutomatizacionHistorias(client) {
   const rutaAbsoluta = path.resolve(HISTORIAS_BASE_DIR);
   console.log('📅 Inicializando automatización de historias...');
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
   
   // Asegurar que existan los directorios por día (lunes, miercoles, viernes)
   ['lunes', 'miercoles', 'viernes'].forEach((dia) => {
@@ -232,6 +245,8 @@ function inicializarAutomatizacionHistorias(client) {
   
   // Programar publicación para cada día
 =======
+=======
+>>>>>>> Stashed changes
   console.log(`   Carpeta de historias: ${rutaAbsoluta}`);
 
   if (!fs.existsSync(HISTORIAS_BASE_DIR)) {
@@ -273,6 +288,9 @@ function inicializarAutomatizacionHistorias(client) {
     console.warn('⚠️ [Historias] No hay cliente wppconnect; los cron se programarán pero fallarán hasta que el bot esté conectado.');
   }
 
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
   Object.entries(HORARIOS_PUBLICACION).forEach(([dia, cronExpression]) => {
     cron.schedule(cronExpression, async () => {

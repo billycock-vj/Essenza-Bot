@@ -759,14 +759,20 @@ wppconnect
   })
   .catch((error) => {
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
     logError(error, { contexto: 'iniciarBot', critico: true });
 =======
+=======
+>>>>>>> Stashed changes
     const mensaje = typeof error === 'string' ? error : (error?.message ?? String(error));
     console.error("❌ Error al iniciar bot:", mensaje || '(sin mensaje)');
     if (error?.stack) console.error("Stack:", error.stack);
     if (mensaje === 'Auto Close Called' || mensaje.includes('autoclose')) {
       console.error("💡 Sugerencia: Sesión cerrada o browser en conflicto. Ejecuta scripts/liberar-sesion-browser.ps1 y vuelve a iniciar.");
     }
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
     process.exit(1);
   });

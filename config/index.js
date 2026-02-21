@@ -14,6 +14,11 @@ const ADMIN_NUMBERS_RAW = process.env.ADMIN_NUMBERS || "983104105";
 // Números completos con sufijo (para casos especiales como dispositivos vinculados)
 const ADMIN_NUMBERS_COMPLETOS = [
 >>>>>>> Stashed changes
+=======
+const ADMIN_NUMBERS_RAW = process.env.ADMIN_NUMBERS || "983104105";
+// Números completos con sufijo (para casos especiales como dispositivos vinculados)
+const ADMIN_NUMBERS_COMPLETOS = [
+>>>>>>> Stashed changes
   "96439782895654@lid"
 ];
 
