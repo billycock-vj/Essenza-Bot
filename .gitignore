@@ -25,3 +25,6 @@ Thumbs.db
 data/
 data-storage/
 *.db
+
+# Imágenes para el flujo del bot (opcional, carpeta imagenes/)
+imagenes/

@@ -1,13 +1,12 @@
 /**
- * ESSENZA BOT - Versión Completa con IA y Automatizaciones
- * 
- * Funcionalidades:
- * 1. Recibe mensajes de WhatsApp
- * 2. Consulta OpenAI con la información de Essenza
- * 3. Clasifica leads automáticamente
- * 4. Envía seguimientos automáticos inteligentes
- * 5. Publica historias automáticamente
- * 6. Responde al cliente
+ * ESSENZA BOT - Flujo simple
+ *
+ * Solo 3 cosas para clientes:
+ * 1. Saludar condicional a horario
+ * 2. Mandar imágenes (carpeta imagenes/)
+ * 3. Preguntar para cuándo le gustaría la reserva
+ *
+ * Los administradores siguen teniendo todos los comandos.
  */
 
 require("dotenv").config();
@@ -20,10 +19,11 @@ const config = require("./config");
 const paths = require("./config/paths");
 const adminHandler = require("./handlers/admin");
 const db = require("./services/database");
-
-// Módulos de funcionalidades
-const leadClassification = require("./handlers/leadClassification");
+const flujoSimple = require("./handlers/flujoSimple");
 const followUp = require("./handlers/followUp");
+const leadClassification = require("./handlers/leadClassification");
+
+// Módulos de funcionalidades (admin, flujo simple, seguimientos)
 const storiesAutomation = require("./handlers/storiesAutomation");
 const messageHelpers = require("./handlers/messageHelpers");
 
@@ -291,32 +291,33 @@ wppconnect
       aiService: true
     });
     
-    // Inicializar automatización de historias
+    // Publicación de estados: cron lunes, miércoles y viernes a las 18:00
     try {
       storiesAutomation.inicializarAutomatizacionHistorias(client);
-      logMessage('SUCCESS', 'Automatización de historias inicializada');
+      logMessage('SUCCESS', 'Automatización de historias activada');
     } catch (error) {
       logError(error, { contexto: 'inicializacionHistorias' });
     }
-    
-    // Ejecutar seguimientos automáticos cada hora
+
+    // Seguimientos automáticos activos: envío cada hora a clientes que no respondieron
     setInterval(async () => {
       try {
         await followUp.enviarSeguimientosAutomaticos(client);
       } catch (error) {
         logError(error, { contexto: 'seguimientosAutomaticos' });
       }
-    }, 60 * 60 * 1000); // Cada hora
-    
-    // Ejecutar seguimientos inmediatamente al iniciar (por si hay clientes pendientes)
+    }, 60 * 60 * 1000);
     setTimeout(async () => {
       try {
         await followUp.enviarSeguimientosAutomaticos(client);
       } catch (error) {
         logError(error, { contexto: 'seguimientosIniciales' });
       }
-    }, 5 * 60 * 1000); // Después de 5 minutos
-    
+    }, 5 * 60 * 1000);
+
+    // Clientes que ya recibieron el flujo completo (saludo + imágenes + pregunta) en esta sesión
+    const flujoSimpleEnviado = new Set();
+
     // Manejar mensajes
     client.onMessage(async (message) => {
       try {
@@ -486,58 +487,37 @@ wppconnect
           }
         }
         
-        // Si no es administrador, usar IA normalmente
-        // (La verificación de flag_bot_activo ya cubre todo, incluyendo IA)
+        // Restricción de prueba: solo responder a números en TEST_NUMBERS (admins ya procesados arriba)
+        if (config.TEST_NUMBERS && config.TEST_NUMBERS.length > 0) {
+          const esNumeroPrueba = config.TEST_NUMBERS.includes(userId) ||
+            config.TEST_NUMBERS.includes(messageHelpers.extraerNumero(userId));
+          if (!esNumeroPrueba) {
+            logMessage('INFO', 'Mensaje ignorado (no está en TEST_NUMBERS)', { userId });
+            return;
+          }
+        }
         
-        // Consultar IA (puede retornar null si el modo no lo permite)
-
-        // Extraer información del mensaje
+        // Registrar/actualizar cliente y estado de lead para que los seguimientos funcionen
         const sessionId = messageHelpers.extraerSessionId(userId);
         const phone = messageHelpers.extraerNumeroReal(message);
         const userName = message.notifyName || message.pushName || 'Cliente';
-        
-        // Obtener o crear cliente en la base de datos
-        let cliente;
         try {
-          cliente = await db.obtenerOCrearCliente(sessionId, phone, phone?.startsWith('51') ? 'PE' : null, userName);
-        } catch (error) {
-          logError(error, { 
-            contexto: 'obtenerOCrearCliente',
-            sessionId,
-            phone 
-          });
-        }
-        
-        // Clasificar lead y actualizar estado
-        try {
+          await db.obtenerOCrearCliente(sessionId, phone, phone?.startsWith('51') ? 'PE' : null, userName);
           await leadClassification.actualizarEstadoLeadCliente(db, sessionId, mensajeTexto);
-        } catch (error) {
-          logError(error, { 
-            contexto: 'clasificarLead',
-            sessionId 
-          });
-        }
-        
-        // Marcar que el cliente respondió (detiene seguimientos pendientes)
-        try {
           await followUp.marcarClienteRespondio(sessionId);
         } catch (error) {
-          logError(error, { 
-            contexto: 'marcarClienteRespondio',
-            sessionId 
-          });
+          logError(error, { contexto: 'clienteSeguimiento', sessionId });
         }
-        
-        // Consultar IA usando AIService
-        const respuesta = await aiService.consultar(mensajeTexto, userId, SYSTEM_PROMPT);
-        
-        // Solo enviar respuesta si la IA respondió
-        if (respuesta) {
-          await messageService.enviarMensaje(userId, respuesta);
-          monitoringService.incrementAIResponses();
-        } else {
-          // Si la IA no respondió (modo manual o solo_faq), informar al usuario
-          logMessage('INFO', 'IA no responde (modo actual)', { userId, modoIA: await db.obtenerConfiguracion('modo_ia') });
+
+        // Flujo simple: solo saludo a horario + imágenes + pregunta de reserva (sin IA)
+        const primeraVez = !flujoSimpleEnviado.has(userId);
+        if (primeraVez) flujoSimpleEnviado.add(userId);
+
+        try {
+          await flujoSimple.ejecutarFlujoSimple(client, userId, primeraVez);
+        } catch (error) {
+          logError(error, { contexto: 'flujoSimple', userId });
+          await messageService.enviarMensaje(userId, 'Disculpa, hubo un error. ¿Para qué día le gustaría la reserva?');
         }
       } catch (error) {
         logError(error, { 

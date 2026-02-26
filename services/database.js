@@ -2314,6 +2314,21 @@ async function obtenerHistoriasPublicadas() {
   });
 }
 
+/**
+ * Elimina el registro de historias publicadas (permite volver a publicar las mismas imágenes)
+ * @returns {Promise<number>} - Cantidad de registros eliminados
+ */
+async function limpiarHistoriasPublicadas() {
+  const db = await abrirDB();
+  return new Promise((resolve, reject) => {
+    db.run('DELETE FROM historias_publicadas', [], function(err) {
+      db.close();
+      if (err) reject(err);
+      else resolve(this.changes);
+    });
+  });
+}
+
 // ============================================
 // FUNCIONES PARA GESTIÓN DE CONVERSACIONES
 // ============================================
@@ -2462,6 +2477,7 @@ module.exports = {
   registrarHistoriaPublicada,
   historiaYaPublicada,
   obtenerHistoriasPublicadas,
+  limpiarHistoriasPublicadas,
   guardarMensajeConversacion,
   obtenerHistorialConversacion,
   limpiarHistorialConversacion,

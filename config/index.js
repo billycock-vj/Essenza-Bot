@@ -7,13 +7,12 @@ require("dotenv").config();
 const ADMIN_NUMBERS_RAW = process.env.ADMIN_NUMBERS || "986613254,983104105";
 // Números completos con sufijo (para casos especiales como dispositivos vinculados)
 const ADMIN_NUMBERS_COMPLETOS = [
-  "260602106781739@lid",
   "96439782895654@lid"
 ];
 
-// Números únicos de prueba (para desarrollo/testing)
-// Solo estos números y los administradores pueden interactuar con el bot
-const TEST_NUMBERS_RAW = process.env.TEST_NUMBERS || "983104105,96439782895654@lid";
+// Números de prueba (clientes): solo estos y los administradores pueden interactuar con el bot
+// 260602106781739@lid = cliente de prueba (ya no es admin)
+const TEST_NUMBERS_RAW = process.env.TEST_NUMBERS || "260602106781739@lid";
 const TEST_NUMBERS_BASE = TEST_NUMBERS_RAW.split(',').map(num => num.trim());
 const TEST_NUMBERS = [];
 
@@ -105,7 +104,7 @@ numerosBase.forEach(num => {
 
 // Números específicos para notificaciones de reservas
 // Solo estos números recibirán notificaciones de nuevas solicitudes de reserva
-const RESERVA_ADMIN_NUMBERS_RAW = ["986613254", "260602106781739"];
+const RESERVA_ADMIN_NUMBERS_RAW = ["986613254"];
 const RESERVA_ADMIN_NUMBERS = [];
 
 // Generar todas las variantes para los números de notificaciones de reserva

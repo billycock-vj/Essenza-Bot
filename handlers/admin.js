@@ -280,6 +280,18 @@ async function procesarComandosAdmin(client, message, userId, text, textLower, e
     }
   }
 
+  // Comando: Limpiar historias publicadas (resetear para poder publicar de nuevo)
+  if (textoTrimmed === 'limpiar historias publicadas' || textoTrimmed === 'reset historias') {
+    try {
+      const eliminadas = await db.limpiarHistoriasPublicadas();
+      await enviarMensajeSeguro(client, userId, `✅ Se eliminaron ${eliminadas} registro(s) de historias publicadas. Las imágenes se podrán volver a publicar.`);
+    } catch (error) {
+      logMessage("ERROR", "Error al limpiar historias publicadas", { error: error.message });
+      await enviarMensajeSeguro(client, userId, `❌ Error: ${error.message}`);
+    }
+    return true;
+  }
+
   // Comando: Crear reserva (flujo interactivo paso a paso)
   if (textLower === "crear reserva" || textLower === "crear cita") {
     // Inicializar datos de reserva
@@ -1441,7 +1453,8 @@ async function mostrarListaComandos(client, userId) {
     `📸 *ESTADOS / HISTORIAS (prueba)*\n` +
     `• sube estados de lunes - Publicar ahora las historias de lunes\n` +
     `• sube estados de miercoles - Publicar ahora las historias de miércoles\n` +
-    `• sube estados de viernes - Publicar ahora las historias de viernes\n\n` +
+    `• sube estados de viernes - Publicar ahora las historias de viernes\n` +
+    `• limpiar historias publicadas - Resetear para poder publicar las mismas imágenes de nuevo\n\n` +
     `🤖 *CONFIGURACIÓN DE IA*\n` +
     `• ia modo [auto|manual|solo_faq] - Cambiar modo de IA\n` +
     `• ia limite [n] - Establecer límite diario de IA (1-100)\n\n` +
